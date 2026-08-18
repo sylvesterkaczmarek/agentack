@@ -67,3 +67,19 @@ The built-in Claude probe stores only sanitized metadata for its synthetic comma
 ## Reporting vulnerabilities
 
 Use GitHub Security Advisories for security reports. Do not publish exploit details in an issue before a fix is available.
+
+## Report provenance and privacy
+
+JSON and SARIF reports contain hashes and structured identifiers needed to correlate approval evidence. They intentionally omit raw action parameters and raw live-adapter telemetry payloads.
+
+A trace SHA-256 identifies the exact input bytes. A policy SHA-256 identifies canonical policy semantics. Neither is a signature, authenticity proof, trusted timestamp, or hardware/software attestation.
+
+Reports can contain user-selected session/action/approval identifiers. They should be handled as security evidence even though raw command parameters are excluded.
+
+See [`report-schema.md`](report-schema.md).
+
+## Loopback telemetry receiver
+
+The Claude Code live adapter binds its OTLP receiver to `127.0.0.1` on an ephemeral port and uses an unpredictable per-run URL path. Requests to other paths are rejected. Request size and accepted payload count are bounded.
+
+The random path reduces accidental or opportunistic local injection but is not an authentication boundary against another process with sufficient visibility into the child process environment or local traffic. Missing or inconsistent telemetry therefore produces `INCOMPLETE` or `FAIL` according to the observed evidence rather than being silently trusted.

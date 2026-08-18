@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,17 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceEvent]:
+def read_jsonl_with_digest(
+    path: str | Path,
+    *,
+    max_events: int = MAX_EVENTS,
+) -> tuple[list[TraceEvent], str]:
     source = Path(path)
     events: list[TraceEvent] = []
+    digest = hashlib.sha256()
     with source.open("rb") as handle:
         for line_number, raw in enumerate(handle, start=1):
+            digest.update(raw)
             if len(raw) > MAX_LINE_BYTES:
                 raise TraceValidationError(f"line {line_number} exceeds {MAX_LINE_BYTES} bytes")
             if not raw.strip():
@@ -49,6 +56,11 @@ def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceE
     session_ids = {event.session_id for event in events}
     if len(session_ids) != 1:
         raise TraceValidationError("one trace file must contain exactly one session_id")
+    return events, digest.hexdigest()
+
+
+def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceEvent]:
+    events, _ = read_jsonl_with_digest(path, max_events=max_events)
     return events
 
 

@@ -5,6 +5,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .adapters.claude import ClaudeCodeAdapter, record_hook_event
@@ -12,9 +13,18 @@ from .demo import SCENARIOS, demo_events
 from .engine import evaluate_events
 from .findings import RULES
 from .models import TraceValidationError
-from .parser import read_jsonl, write_jsonl
+from .parser import read_jsonl_with_digest, write_jsonl
 from .policy import Policy
-from .report import render_text, write_json_report, write_sarif
+from .provenance import trace_digest_from_events
+from .report import (
+    adapter_report_payload,
+    adapter_sarif_payload,
+    render_text,
+    trace_report_payload,
+    trace_sarif_payload,
+    write_json_report,
+    write_sarif,
+)
 from .ux import render_adapter_test, render_doctor
 
 EXIT_PASS = 0
@@ -35,23 +45,62 @@ def _status_code(status: str) -> int:
     }[status]
 
 
-def _emit_outputs(args: argparse.Namespace, report) -> None:  # type: ignore[no-untyped-def]
-    print(render_text(report))
-    if getattr(args, "json_output", None):
-        write_json_report(args.json_output, report)
-    if getattr(args, "sarif", None):
-        write_sarif(args.sarif, report)
+def _output_error(exc: OSError) -> int:
+    print(f"agentack: output error: {exc}", file=sys.stderr)
+    return EXIT_INPUT_ERROR
+
+
+def _write_machine_outputs(
+    args: argparse.Namespace,
+    *,
+    json_payload: dict[str, Any],
+    sarif_payload: dict[str, Any],
+) -> int | None:
+    json_output = getattr(args, "json_output", None)
+    sarif_output = getattr(args, "sarif", None)
+    if json_output and sarif_output:
+        try:
+            same_output = Path(json_output).resolve() == Path(sarif_output).resolve()
+        except OSError as exc:
+            return _output_error(exc)
+        if same_output:
+            print("agentack: output error: --json and --sarif must use different paths", file=sys.stderr)
+            return EXIT_INPUT_ERROR
+    try:
+        if json_output:
+            write_json_report(json_output, json_payload)
+        if sarif_output:
+            write_sarif(sarif_output, sarif_payload)
+    except OSError as exc:
+        return _output_error(exc)
+    return None
 
 
 def cmd_check(args: argparse.Namespace) -> int:
     try:
         policy = _policy(args.policy)
-        events = read_jsonl(args.trace)
+        events, trace_sha256 = read_jsonl_with_digest(args.trace)
     except (OSError, ValueError, TraceValidationError) as exc:
         print(f"agentack: input error: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
+
     report = evaluate_events(events, policy=policy, source=str(Path(args.trace)))
-    _emit_outputs(args, report)
+    document = trace_report_payload(
+        report,
+        events,
+        policy,
+        trace_sha256=trace_sha256,
+        trace_source=args.trace,
+        policy_source=args.policy,
+    )
+    output_status = _write_machine_outputs(
+        args,
+        json_payload=document,
+        sarif_payload=trace_sarif_payload(report, document),
+    )
+    if output_status is not None:
+        return output_status
+    print(render_text(report))
     return _status_code(report.status)
 
 
@@ -78,17 +127,35 @@ def cmd_demo(args: argparse.Namespace) -> int:
         return EXIT_PASS
     if args.scenario is None and not any((args.write, args.policy, args.json_output, args.sarif)):
         return _demo_showcase()
+
     scenario = args.scenario or "secure"
     try:
         events = demo_events(scenario)
         policy = _policy(args.policy)
-    except (ValueError, OSError) as exc:
-        print(f"agentack: {exc}", file=sys.stderr)
+        if args.write:
+            write_jsonl(args.write, events)
+    except (OSError, ValueError, TraceValidationError) as exc:
+        print(f"agentack: input/output error: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
-    if args.write:
-        write_jsonl(args.write, events)
+
     report = evaluate_events(events, policy=policy, source=f"demo:{scenario}")
-    _emit_outputs(args, report)
+    trace_sha256 = trace_digest_from_events(events)
+    document = trace_report_payload(
+        report,
+        events,
+        policy,
+        trace_sha256=trace_sha256,
+        trace_source=args.write or f"demo-{scenario}.jsonl",
+        policy_source=args.policy,
+    )
+    output_status = _write_machine_outputs(
+        args,
+        json_payload=document,
+        sarif_payload=trace_sarif_payload(report, document),
+    )
+    if output_status is not None:
+        return output_status
+    print(render_text(report))
     return _status_code(report.status)
 
 
@@ -123,7 +190,20 @@ def cmd_test(args: argparse.Namespace) -> int:
     if args.agent != "claude":
         print(f"agentack: unsupported live adapter {args.agent!r}", file=sys.stderr)
         return EXIT_INPUT_ERROR
-    result = ClaudeCodeAdapter().run_test()
+    try:
+        result = ClaudeCodeAdapter().run_test()
+    except (OSError, ValueError) as exc:
+        print(f"agentack: adapter error: {exc}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
+
+    document = adapter_report_payload(result)
+    output_status = _write_machine_outputs(
+        args,
+        json_payload=document,
+        sarif_payload=adapter_sarif_payload(result, document),
+    )
+    if output_status is not None:
+        return output_status
     print()
     print(render_adapter_test(result))
     return _status_code(result.status)
@@ -148,7 +228,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     if target.exists() and not args.force:
         print(f"agentack: {target} already exists; use --force to replace it", file=sys.stderr)
         return EXIT_INPUT_ERROR
-    target.write_text(Policy().to_toml(), encoding="utf-8")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(Policy().to_toml(), encoding="utf-8")
+    except OSError as exc:
+        return _output_error(exc)
     print(f"Wrote {target}")
     return EXIT_PASS
 
@@ -209,6 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     live_test = subparsers.add_parser("test", help="run a live approval-integrity test against a supported agent")
     live_test.add_argument("agent", choices=("claude",))
+    live_test.add_argument("--json", dest="json_output")
+    live_test.add_argument("--sarif")
     live_test.set_defaults(func=cmd_test)
 
     check = subparsers.add_parser("check", help="evaluate an existing AgentAck JSONL trace")

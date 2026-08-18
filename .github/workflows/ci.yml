@@ -8,14 +8,30 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install development checks
+        run: python -m pip install -e '.[dev]'
+      - name: Lint
+        run: python -m ruff check .
+      - name: Type check
+        run: python -m mypy src/agentack/models.py src/agentack/provenance.py src/agentack/report.py src/agentack/adapters/base.py
+      - name: Unit and regression tests
+        run: python -m unittest discover -s tests -v
+
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
@@ -37,3 +53,44 @@ jobs:
           set -e
           test "$fail_code" -eq 1
           test "$incomplete_code" -eq 3
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install 'build>=1.2,<2' 'twine>=6,<7'
+      - name: Build distributions
+        run: python -m build
+      - name: Validate metadata
+        run: python -m twine check dist/*
+      - name: Installed-wheel smoke
+        run: |
+          python -m venv .wheel-venv
+          .wheel-venv/bin/python -m pip install --no-deps dist/*.whl
+          .wheel-venv/bin/agentack --version
+          .wheel-venv/bin/agentack demo
+          .wheel-venv/bin/agentack doctor
+
+  cross-platform:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install .
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: CLI smoke
+        run: |
+          agentack --version
+          agentack demo
+          agentack doctor

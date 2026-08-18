@@ -1,0 +1,29 @@
+name: Integration request
+description: Propose an agent integration with a concrete approval or tool-event boundary
+title: "[Integration] "
+body:
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or framework
+      placeholder: Product name and version if known
+    validations:
+      required: true
+  - type: textarea
+    id: hooks
+    attributes:
+      label: Available evidence boundary
+      description: Link or describe official hooks, events, permission decisions, or execution APIs that AgentAck could observe.
+    validations:
+      required: true
+  - type: textarea
+    id: approval
+    attributes:
+      label: Approval flow
+      description: Describe what the human sees, how allow/deny is represented, and how execution can be correlated with that decision.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes

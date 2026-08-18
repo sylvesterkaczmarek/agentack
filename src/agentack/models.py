@@ -112,6 +112,40 @@ class Action:
         return payload
 
 
+@dataclass(frozen=True)
+class ActionIdentity:
+    sha256: str
+    tool: str
+    operation: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"sha256": self.sha256, "tool": self.tool, "operation": self.operation}
+
+
+@dataclass(frozen=True)
+class ActionLifecycleIdentity:
+    action_id: str
+    intent_id: str | None = None
+    approval_id: str | None = None
+    decision: Decision | None = None
+    expected: ActionIdentity | None = None
+    presented: ActionIdentity | None = None
+    executed: ActionIdentity | None = None
+    blocked: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "intent_id": self.intent_id,
+            "approval_id": self.approval_id,
+            "decision": self.decision,
+            "expected": self.expected.to_dict() if self.expected else None,
+            "presented": self.presented.to_dict() if self.presented else None,
+            "executed": self.executed.to_dict() if self.executed else None,
+            "blocked": self.blocked,
+        }
+
+
 _EVENT_FIELDS: dict[str, set[str]] = {
     "action_proposed": {
         "schema_version", "type", "timestamp", "session_id", "action_id", "intent_id", "action"
@@ -255,13 +289,15 @@ class EvaluationReport:
     rule_counts: dict[str, int]
     source: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_result_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
             "status": self.status,
-            "source": self.source,
             "events": self.events,
             "finding_count": len(self.findings),
             "rule_counts": self.rule_counts,
             "findings": [finding.to_dict() for finding in self.findings],
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the deterministic evaluation result without run provenance."""
+        return self.to_result_dict()

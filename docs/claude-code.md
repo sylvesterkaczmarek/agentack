@@ -71,3 +71,15 @@ The live probe uses only synthetic `echo` commands in a temporary directory.
 Hook capture persists only sanitized metadata for the synthetic tool calls. Claude Code's OTLP logs may contain its normal standard resource attributes, but AgentAck sends them only to a loopback receiver, keeps the payloads in memory, extracts only tool-decision fields, and does not persist those telemetry payloads.
 
 The deterministic AgentAck engine remains framework-agnostic and has no Claude Code or Anthropic library dependency.
+
+## Machine-readable reports
+
+The live test can emit the same versioned report envelope used by trace checks:
+
+```bash
+agentack test claude --json agentack-claude.json --sarif agentack-claude.sarif
+```
+
+The report records adapter/version information, a digest of the sanitized evidence set, session/run identifiers, synthetic action identities, and check results. Raw Claude telemetry payloads and raw action parameters are not copied into the report.
+
+See [`report-schema.md`](report-schema.md).

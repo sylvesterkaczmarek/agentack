@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 _MAX_REQUEST_BYTES = 5_000_000
+_MAX_PAYLOADS = 100
 
 
 @dataclass(frozen=True)
@@ -87,10 +89,15 @@ class LocalOtelCollector:
     def __init__(self) -> None:
         self._payloads: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._path = f"/{secrets.token_urlsafe(18)}/v1/logs"
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
+                if self.path != outer._path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                 except ValueError:
@@ -108,6 +115,10 @@ class LocalOtelCollector:
                     return
                 if isinstance(payload, dict):
                     with outer._lock:
+                        if len(outer._payloads) >= _MAX_PAYLOADS:
+                            self.send_response(429)
+                            self.end_headers()
+                            return
                         outer._payloads.append(payload)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -123,7 +134,7 @@ class LocalOtelCollector:
     @property
     def endpoint(self) -> str:
         host, port = self._server.server_address[:2]
-        return f"http://{host}:{port}/v1/logs"
+        return f"http://{host}:{port}{self._path}"
 
     def __enter__(self) -> "LocalOtelCollector":
         self._thread.start()

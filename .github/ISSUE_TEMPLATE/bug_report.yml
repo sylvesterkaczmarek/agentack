@@ -1,0 +1,47 @@
+name: Bug report
+description: Report reproducible incorrect behavior in AgentAck
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: For security vulnerabilities, use GitHub Security Advisories instead of this form.
+  - type: input
+    id: version
+    attributes:
+      label: AgentAck version
+      placeholder: agentack 0.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Deterministic checker
+        - CLI
+        - Claude Code adapter
+        - JSON or SARIF report
+        - Packaging or CI
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe reproduction. Remove secrets and private data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true

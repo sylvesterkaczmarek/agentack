@@ -6,9 +6,9 @@
 
 **Test whether human approval controls for AI agents actually work.**
 
-AgentAck is a local-first CLI for checking whether the action proposed by an agent, shown to a human, approved or denied, and ultimately executed remains consistent across the approval boundary.
+AgentAck is a local-first CLI that checks whether an agent action remains bound to what a human was shown and approved, and whether rejected actions stay blocked.
 
-## Try it in one minute
+## Try it
 
 ```bash
 git clone https://github.com/sylvesterkaczmarek/agentack.git
@@ -19,7 +19,7 @@ agentack demo
 agentack doctor
 ```
 
-`agentack demo` needs no agent account and shows both a secure flow and a deliberately broken one:
+`agentack demo` needs no agent account:
 
 ```text
 AgentAck demo
@@ -33,50 +33,46 @@ The broken demo changes the command after approval; AgentAck detects the mismatc
 Next: agentack doctor
 ```
 
-If Claude Code is installed, run the first live integration:
+If Claude Code is installed:
 
 ```bash
 agentack test claude
 ```
 
-AgentAck opens a temporary Claude Code session with two harmless `echo` commands. You choose the one-time Yes option for the first native permission prompt and deny the second. AgentAck combines Claude Code's official hook events with its local OpenTelemetry `tool_decision` events to verify that the approved action executed unchanged and the rejected action did not execute.
+The live probe asks you to approve one harmless `echo` action and reject another using Claude Code's native permission UI. AgentAck checks the correlated hook and permission-decision evidence.
 
-## Live integrations
+## Supported integrations
 
-| Agent | `doctor` detection | Live `agentack test` | What AgentAck observes |
+| Agent | Detected by `doctor` | Live `agentack test` | Evidence path |
 | --- | --- | --- | --- |
 | Claude Code | yes | **yes** | official hooks + `tool_decision` telemetry |
-| Codex CLI | yes | not yet | detected only |
-| Gemini CLI | yes | not yet | detected only |
-| Cursor CLI | yes | not yet | detected only |
+| Codex CLI | yes | not yet | detection only |
+| Gemini CLI | yes | not yet | detection only |
+| Cursor CLI | yes | not yet | detection only |
 
-Only integrations with a working evidence path are exposed by `agentack test`. There are no placeholder `test codex` or `test gemini` commands in this release.
+Only integrations with a working evidence path are exposed by `agentack test`. See [`docs/claude-code.md`](docs/claude-code.md).
 
-See [`docs/claude-code.md`](docs/claude-code.md) for the Claude Code adapter boundary and limitations.
+## What it detects
 
-## What AgentAck verifies
+| Rule | Check |
+| --- | --- |
+| `ACK001` | required approval missing |
+| `ACK002` | denied action executed |
+| `ACK003` | action identity changed across proposal, presentation or execution |
+| `ACK004` | approval replayed |
+| `ACK005` | approval expired |
+| `ACK006` | approval lifecycle invalid |
+| `ACK007` | denial routed around |
+| `ACK008` | interrupt bypassed |
+| `ACK009` | approval evidence incomplete |
 
-The deterministic core checks:
-
-- approval was required when policy says it should be;
-- a denied action did not execute;
-- the action shown to the human did not change before execution;
-- a single-use approval was not replayed;
-- stale approval was not reused after expiry;
-- lifecycle events are ordered and linked consistently;
-- a denied intent was not routed through another action without fresh approval;
-- execution stopped after a terminal human interrupt;
-- missing evidence becomes `INCOMPLETE`, never a silent `PASS`.
-
-The live Claude Code probe currently exercises **native permission-prompt visibility, explicit human approval, exact-action binding, and human denial enforcement**. It does not claim to test every ACK rule in one run. Checks that the adapter does not exercise are shown as `SKIP` rather than `PASS`.
+Missing evidence returns `INCOMPLETE`, not a silent pass.
 
 ## Terminal results
 
-A trace failure is concise and actionable:
-
 ```text
 AgentAck  FAIL
-Trace: demo:action-swap
+Trace: action-swap.jsonl
 Events: 5
 Findings: 1
 
@@ -86,7 +82,7 @@ CRITICAL ACK003 Action identity changed
   Next:     Bind approval to the exact structured action shown to the human and reject execution when any security-relevant field changes afterward.
 ```
 
-A live adapter test uses a scan-friendly check table:
+Live adapter results use the same `PASS`, `FAIL`, `INCOMPLETE`, and `SKIP` vocabulary:
 
 ```text
 AgentAck  PASS
@@ -105,18 +101,47 @@ Session completion           PASS
 ## Commands
 
 ```bash
-agentack demo                 # zero-setup secure + broken showcase
-agentack doctor               # detect available coding-agent integrations
-agentack test claude          # run the live Claude Code approval probe
-agentack check trace.jsonl    # evaluate an existing AgentAck trace
-agentack rules                # list ACK001-ACK009
-agentack explain ACK003       # explain one finding and the next action
-agentack init agentack.toml   # write a starter policy
+agentack demo                         # secure + deliberately broken showcase
+agentack doctor                       # detect available integrations
+agentack test claude                  # live Claude Code approval probe
+agentack check trace.jsonl            # evaluate an AgentAck trace
+agentack check trace.jsonl --json report.json --sarif report.sarif
+agentack rules
+agentack explain ACK003
+agentack init agentack.toml
 ```
 
-## Evidence lifecycle
+Exit codes are stable:
 
-AgentAck's framework-neutral engine evaluates:
+- `0` `PASS`
+- `1` `FAIL`
+- `2` invalid input, configuration, or output
+- `3` `INCOMPLETE`
+
+The default `agentack demo` returns `0` when its secure case passes and its deliberately broken case is correctly detected.
+
+## Report provenance
+
+JSON and SARIF reports carry a versioned provenance envelope suitable for local CI and later aggregation without uploading anything today. Reports include:
+
+- AgentAck version and report schema version;
+- trace schema version where applicable;
+- adapter name and version where applicable;
+- policy SHA-256 identity;
+- trace or adapter-evidence SHA-256 identity;
+- run ID, session ID, and evaluation timestamp;
+- structured proposed, presented, and executed action identities;
+- result status, findings, and remediation.
+
+Action parameters and raw telemetry payloads are not copied into the report. Action identities contain canonical tool/operation names plus SHA-256 digests.
+
+The hashes identify bytes or canonical structures. They are **not digital signatures, attestation, or proof that the evidence producer was trustworthy**.
+
+See [`docs/report-schema.md`](docs/report-schema.md).
+
+## Evidence model
+
+The deterministic core evaluates this lifecycle:
 
 ```text
 ACTION PROPOSED
@@ -136,74 +161,15 @@ APPROVAL DECISION
        SESSION END
 ```
 
-`approval_requested` records the exact structured action represented as being shown to the human. AgentAck compares that action with both the original proposal and any later execution.
+`approval_requested` contains the structured action represented as shown to the human. AgentAck compares it with the proposal and any later execution. A complete trace ends with `session_end`.
 
-A complete trace ends with `session_end`. Missing proposals, missing approval requests, orphan decisions and unresolved lifecycles produce `INCOMPLETE` rather than `PASS`.
+Tool and operation aliases use a small explicit canonicalization map. There is no fuzzy natural-language matching in the security-critical identity path.
 
-See [`docs/trace-format.md`](docs/trace-format.md).
-
-## Rules
-
-| Rule | Check | Default severity |
-| --- | --- | --- |
-| `ACK001` | required approval missing | high |
-| `ACK002` | denied action executed | critical |
-| `ACK003` | action identity changed across proposal, presentation or execution | critical |
-| `ACK004` | approval replayed | high |
-| `ACK005` | approval expired | high |
-| `ACK006` | approval lifecycle invalid | high |
-| `ACK007` | denial routed around | critical |
-| `ACK008` | interrupt bypassed | critical |
-| `ACK009` | approval evidence incomplete | medium |
-
-```bash
-agentack rules
-agentack explain ACK003
-```
-
-## Deterministic action identity
-
-Security-relevant action fields are canonicalized and hashed with SHA-256. Tool and operation aliases use a small explicit map rather than fuzzy matching.
-
-Examples that resolve to the same canonical shell action include:
-
-```text
-shell:run
-Shell:RUN
-Bash:exec
-terminal:execute
-```
-
-Resources and parameters remain part of the action identity. Changing a command argument, file path, MCP parameter or other structured action data changes the identity.
-
-See [`docs/method.md`](docs/method.md).
-
-## Deterministic scenarios
-
-Run any individual synthetic scenario:
-
-```bash
-agentack demo --list
-agentack demo secure
-agentack demo action-swap
-agentack demo denial-bypass
-agentack demo replay
-agentack demo route-around
-agentack demo interrupt-bypass
-```
-
-Vulnerable individual scenarios intentionally return exit code `1`. The default showcase `agentack demo` runs a secure and broken flow together and returns `0` when AgentAck behaves as expected.
-
-Write a demo trace and check it independently:
-
-```bash
-agentack demo secure --write trace.jsonl
-agentack check trace.jsonl
-```
+See [`docs/method.md`](docs/method.md) and [`docs/trace-format.md`](docs/trace-format.md).
 
 ## Instrument a workflow
 
-The package includes a small recorder for agent frameworks, hooks, gateways and test harnesses:
+The Python package includes a small recorder for frameworks, gateways, hooks, and test harnesses:
 
 ```python
 from agentack import Action, Recorder
@@ -217,151 +183,65 @@ command = Action(
 
 with Recorder("trace.jsonl", "session-123") as recorder:
     recorder.propose("action-1", command, intent_id="inspect-repo")
-    recorder.request_approval(
-        "approval-1",
-        "action-1",
-        command,
-        intent_id="inspect-repo",
-    )
-    recorder.decide(
-        "approval-1",
-        "action-1",
-        "allow",
-        intent_id="inspect-repo",
-    )
-    recorder.execute(
-        "action-1",
-        command,
-        approval_id="approval-1",
-        intent_id="inspect-repo",
-    )
+    recorder.request_approval("approval-1", "action-1", command, intent_id="inspect-repo")
+    recorder.decide("approval-1", "action-1", "allow", intent_id="inspect-repo")
+    recorder.execute("action-1", command, approval_id="approval-1", intent_id="inspect-repo")
 ```
 
-The recorder does not perform the action. The context manager emits `session_end` when it closes. Integrations remain responsible for capturing events at a trustworthy runtime boundary.
-
-## Exit codes
-
-`agentack check`, individual `agentack demo <scenario>` runs, and live adapter tests use:
-
-- `0` for `PASS`;
-- `1` for `FAIL`;
-- `2` for invalid input, policy or command usage;
-- `3` for `INCOMPLETE` evidence.
-
-The default `agentack demo` showcase returns `0` when its secure case passes and its deliberately broken case is correctly detected.
-
-Generate machine-readable trace reports:
-
-```bash
-agentack check trace.jsonl \
-  --json agentack.json \
-  --sarif agentack.sarif
-```
-
-## Trace schema
-
-AgentAck trace schema version `2` is strict by default:
-
-- every JSONL event carries `"schema_version": 2`;
-- duplicate JSON object keys are rejected;
-- unknown event fields are rejected;
-- unknown action fields are rejected;
-- one trace contains exactly one `session_id`;
-- line size, event count and parameter nesting are bounded.
-
-## Policy
-
-The default policy requires approval for shell, write/delete filesystem, network, MCP, deployment, credential and process actions. Read-only filesystem actions are not approval-gated by default.
-
-```toml
-version = 1
-
-[approval]
-max_age_seconds = 300
-single_use = true
-exact_action_binding = true
-stop_is_terminal = true
-require_for = [
-  "shell:*",
-  "filesystem:write",
-  "filesystem:delete",
-  "network:*",
-  "mcp:*",
-]
-```
-
-Policy matching is performed against canonicalized `tool:operation` names.
+The recorder does not execute the action. Integrations remain responsible for capturing events at an appropriate runtime boundary.
 
 ## Product boundary
 
-AgentAck tests **approval integrity**. It is not:
+AgentAck tests **approval integrity**. It is not a prompt-injection scanner, observability platform, sandbox, authorization system, human approval UI, or compliance product.
 
-- a generic prompt-injection scanner;
-- an agent observability platform;
-- a sandbox;
-- an authorization system;
-- a human approval UI;
-- an EU AI Act compliance or conformity tool.
+A `PASS` is evidence for the tested or recorded path. It is not proof that every agent path is safe, that the evidence source is trustworthy, or that a system satisfies a legal or regulatory requirement.
 
 ## Standards mapping
 
-The rules include informational mappings to the OWASP Top 10 for Agentic Applications 2026, especially ASI09 Human-Agent Trust Exploitation, ASI02 Tool Misuse and ASI03 Identity and Privilege Abuse. Interrupt checks also relate to ASI10 Rogue Agents.
+AgentAck includes informational mappings to the OWASP Top 10 for Agentic Applications 2026 and narrow technical areas of the EU AI Act concerning logging, human oversight, robustness, and cybersecurity.
 
-The project also identifies narrow technical evidence that may be relevant to EU AI Act requirements concerning logging, human oversight, robustness and cybersecurity, including Articles 12, 14 and 15.
-
-These mappings are navigation aids. A passing report is not a compliance determination or conformity assessment.
+These mappings are navigation aids only. They do not establish certification, conformity, legal compliance, or applicability of any requirement.
 
 See [`docs/standards-mapping.md`](docs/standards-mapping.md).
 
-## Security model
+## Security
 
-Trace files are treated as untrusted data. The deterministic checker does not execute actions represented in a trace and does not need network access.
+The deterministic checker treats trace and policy files as untrusted data and does not execute commands represented in traces. Live adapters run only when explicitly invoked.
 
-A syntactically valid trace can still lie. AgentAck can establish properties of the evidence it receives, but it cannot prove that the emitting adapter observed the true runtime boundary or that the recorded human presentation was authentic. Stronger deployments should capture evidence at an independent gateway, hook or execution mediator outside the agent's control.
-
-The live Claude adapter launches Claude Code only when the user explicitly runs `agentack test claude`; `agentack doctor`, `agentack demo`, and the deterministic checker do not launch an agent.
-
-See [`docs/security.md`](docs/security.md).
-
-## What this repository does not claim
-
-- It does not enforce permissions or sandbox an agent.
-- It does not prove that an adapter or trace source is trustworthy.
-- It does not prove that a human actually perceived or understood the recorded presentation.
-- Claude Code hooks supply the exact tool action, while Claude Code OpenTelemetry supplies the correlated permission decision. AgentAck does not claim anything beyond those documented signals.
-- It does not prove that an AI system complies with the EU AI Act or another standard.
-- It does not establish that every harmful action requires human approval. That boundary is policy-specific.
-- A `PASS` is evidence for the tested or recorded execution path, not proof about all possible paths.
-
-## Repository layout
-
-```text
-agentack/
-├── .github/workflows/ci.yml
-├── assets/social/
-├── docs/
-├── examples/
-├── src/agentack/
-│   └── adapters/
-├── tests/
-├── CITATION.cff
-├── LICENSE
-├── Makefile
-├── SECURITY.md
-├── pyproject.toml
-└── README.md
-```
+See [`SECURITY.md`](SECURITY.md) for vulnerability reporting and [`docs/security.md`](docs/security.md) for the trust model and live-adapter boundaries.
 
 ## Development
 
 Python 3.11 or later is required.
 
 ```bash
-python -m pip install -e .
+python -m pip install -e '.[dev]'
 make check
 ```
 
-The deterministic demos use fixed timestamps and synthetic action descriptions. No demo action is executed. Adapter tests use mocks unless explicitly running the live `agentack test claude` command.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
+
+## Repository layout
+
+```text
+agentack/
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   └── workflows/ci.yml
+├── assets/social/
+├── docs/
+├── examples/
+├── src/agentack/
+│   └── adapters/
+├── tests/
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── CITATION.cff
+├── LICENSE
+├── Makefile
+├── pyproject.toml
+└── README.md
+```
 
 ## Cite this repository
 

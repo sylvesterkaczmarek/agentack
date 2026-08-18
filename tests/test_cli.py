@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,71 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertTrue(report.exists())
             self.assertTrue(sarif.exists())
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(payload["report_schema_version"], 1)
+            self.assertEqual(payload["producer"]["name"], "AgentAck")
+            self.assertEqual(payload["run"]["kind"], "trace")
+            self.assertEqual(payload["input"]["trace"]["source"], "trace.jsonl")
+            self.assertTrue(payload["input"]["trace"]["sha256"])
+            self.assertTrue(payload["input"]["policy"]["sha256"])
+            self.assertTrue(payload["actions"])
+            sarif_payload = json.loads(sarif.read_text(encoding="utf-8"))
+            self.assertEqual(sarif_payload["runs"][0]["tool"]["driver"]["name"], "AgentAck")
+            self.assertTrue(sarif_payload["runs"][0]["tool"]["driver"]["version"])
+
+    def test_unreadable_or_missing_trace_returns_input_error_without_traceback(self):
+        result = self.run_cli("check", "/definitely/missing/trace.jsonl")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("input error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_policy_returns_input_error_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.jsonl"
+            policy = Path(directory) / "policy.toml"
+            write_jsonl(trace, demo_events("secure"))
+            policy.write_text("not valid = [", encoding="utf-8")
+            result = self.run_cli("check", str(trace), "--policy", str(policy))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("input error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_json_and_sarif_cannot_overwrite_the_same_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "report.json"
+            result = self.run_cli("demo", "secure", "--json", str(output), "--sarif", str(output))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must use different paths", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_report_write_error_returns_two_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.jsonl"
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("x", encoding="utf-8")
+            write_jsonl(trace, demo_events("secure"))
+            result = self.run_cli("check", str(trace), "--json", str(blocker / "report.json"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("output error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_demo_trace_write_error_returns_two_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("x", encoding="utf-8")
+            result = self.run_cli("demo", "secure", "--write", str(blocker / "trace.jsonl"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("input/output error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_init_write_error_returns_two_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory) / "not-a-directory"
+            blocker.write_text("x", encoding="utf-8")
+            result = self.run_cli("init", str(blocker / "agentack.toml"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("output error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

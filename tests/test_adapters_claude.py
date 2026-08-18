@@ -102,6 +102,14 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(statuses["Exact action binding"], "PASS")
         self.assertEqual(statuses["Denial enforcement"], "PASS")
         self.assertEqual(statuses["Approval replay"], "SKIP")
+        self.assertEqual(result.session_id, "s")
+        self.assertEqual(len(result.actions), 2)
+        self.assertTrue(result.evidence_sha256)
+        expected_hash = result.actions[0].expected.sha256
+        self.assertEqual(len(expected_hash), 64)
+        self.assertEqual(result.actions[0].presented.sha256, expected_hash)
+        self.assertEqual(result.actions[0].executed.sha256, expected_hash)
+        self.assertTrue(result.actions[1].blocked)
 
     def test_rejected_probe_must_not_execute(self):
         records, decisions = complete_capture(deny_post=True)
@@ -129,6 +137,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         records, decisions = complete_capture()
         for record in records:
             if record.get("event") == "PostToolUse" and record.get("tool_use_id") == "tool-approve":
+                record["action"]["parameters"]["command"] = "echo changed-after-approval"
                 record["action_hash"] = "c" * 64
         result = analyze_capture(records, decisions)
         self.assertEqual(result.status, "FAIL")

@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal
 
+from ..models import ActionLifecycleIdentity
+
 CheckStatus = Literal["PASS", "FAIL", "INCOMPLETE", "SKIP"]
 TestStatus = Literal["PASS", "FAIL", "INCOMPLETE"]
 
@@ -25,6 +27,9 @@ class CheckResult:
     status: CheckStatus
     detail: str
 
+    def to_dict(self) -> dict[str, str]:
+        return {"label": self.label, "status": self.status, "detail": self.detail}
+
 
 @dataclass(frozen=True)
 class AdapterTestResult:
@@ -33,6 +38,10 @@ class AdapterTestResult:
     status: TestStatus
     checks: tuple[CheckResult, ...]
     notes: tuple[str, ...] = ()
+    adapter_version: str | None = None
+    session_id: str | None = None
+    evidence_sha256: str | None = None
+    actions: tuple[ActionLifecycleIdentity, ...] = ()
 
 
 class AgentAdapter(ABC):
