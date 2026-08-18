@@ -36,6 +36,35 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn("INCOMPLETE", result.stdout)
 
+    def test_default_demo_showcases_secure_and_broken_flow(self):
+        result = self.run_cli("demo")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Secure approval flow", result.stdout)
+        self.assertIn("DETECTED (ACK003)", result.stdout)
+        self.assertIn("agentack doctor", result.stdout)
+
+    def test_doctor_is_safe_without_live_adapter(self):
+        result = self.run_cli("doctor")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("AgentAck doctor", result.stdout)
+
+    def test_explain_includes_actionable_next_step(self):
+        result = self.run_cli("explain", "ACK003")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Why:", result.stdout)
+        self.assertIn("Next:", result.stdout)
+
+    def test_internal_hook_error_does_not_use_claude_block_exit_code(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "agentack", "_hook", "claude", "--event", "PreToolUse", "--capture", "ignored.jsonl"],
+            input="not-json",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotEqual(result.returncode, 2)
+
     def test_json_and_sarif_outputs(self):
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "trace.jsonl"

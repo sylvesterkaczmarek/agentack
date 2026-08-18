@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
 from . import __version__
+from .adapters.claude import ClaudeCodeAdapter, record_hook_event
 from .demo import SCENARIOS, demo_events
 from .engine import evaluate_events
 from .findings import RULES
@@ -13,6 +15,7 @@ from .models import TraceValidationError
 from .parser import read_jsonl, write_jsonl
 from .policy import Policy
 from .report import render_text, write_json_report, write_sarif
+from .ux import render_adapter_test, render_doctor
 
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -52,22 +55,92 @@ def cmd_check(args: argparse.Namespace) -> int:
     return _status_code(report.status)
 
 
+def _demo_showcase() -> int:
+    secure = evaluate_events(demo_events("secure"), source="demo:secure")
+    broken = evaluate_events(demo_events("action-swap"), source="demo:action-swap")
+    detected = "ACK003" in broken.rule_counts
+    print("AgentAck demo")
+    print()
+    print(f"{'Secure approval flow':<30} {secure.status}")
+    print(f"{'Action changed after approval':<30} {'DETECTED (ACK003)' if detected else 'MISSED'}")
+    print()
+    print("AgentAck binds the action shown for approval to the action that later executes.")
+    print("The broken demo changes the command after approval; AgentAck detects the mismatch.")
+    print()
+    print("Next: agentack doctor")
+    return EXIT_PASS if secure.status == "PASS" and detected else EXIT_FAIL
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     if args.list:
         for scenario in SCENARIOS:
             print(scenario)
         return EXIT_PASS
+    if args.scenario is None and not any((args.write, args.policy, args.json_output, args.sarif)):
+        return _demo_showcase()
+    scenario = args.scenario or "secure"
     try:
-        events = demo_events(args.scenario)
+        events = demo_events(scenario)
         policy = _policy(args.policy)
     except (ValueError, OSError) as exc:
         print(f"agentack: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
     if args.write:
         write_jsonl(args.write, events)
-    report = evaluate_events(events, policy=policy, source=f"demo:{args.scenario}")
+    report = evaluate_events(events, policy=policy, source=f"demo:{scenario}")
     _emit_outputs(args, report)
     return _status_code(report.status)
+
+
+def _discovered_without_adapters() -> list[tuple[str, str, str | None]]:
+    tools = (
+        ("Codex CLI", "codex"),
+        ("Gemini CLI", "gemini"),
+        ("Cursor CLI", "cursor"),
+    )
+    discovered: list[tuple[str, str, str | None]] = []
+    for display_name, binary in tools:
+        path = shutil.which(binary)
+        if path:
+            discovered.append(
+                (
+                    display_name,
+                    "DETECTED",
+                    f"Found at {path}. AgentAck does not expose a live `{binary}` adapter yet.",
+                )
+            )
+    return discovered
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    del args
+    claude = ClaudeCodeAdapter().detect()
+    print(render_doctor([claude], _discovered_without_adapters()))
+    return EXIT_PASS
+
+
+def cmd_test(args: argparse.Namespace) -> int:
+    if args.agent != "claude":
+        print(f"agentack: unsupported live adapter {args.agent!r}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
+    result = ClaudeCodeAdapter().run_test()
+    print()
+    print(render_adapter_test(result))
+    return _status_code(result.status)
+
+
+def cmd_hook(args: argparse.Namespace) -> int:
+    # Claude Code reserves hook exit code 2 for a blocking decision.
+    # Recorder failures must therefore use 1 so AgentAck never changes permission behavior.
+    if args.agent != "claude":
+        return 1
+    try:
+        raw = sys.stdin.buffer.read(1_000_001)
+        record_hook_event(args.event, args.capture, raw)
+    except (OSError, ValueError) as exc:
+        print(f"agentack hook error: {exc}", file=sys.stderr)
+        return 1
+    return EXIT_PASS
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -88,6 +161,7 @@ def cmd_rules(args: argparse.Namespace) -> int:
                 "title": spec.title,
                 "description": spec.description,
                 "standards": list(spec.standards),
+                "remediation": spec.remediation,
             }
             for rule_id, spec in RULES.items()
         }
@@ -106,7 +180,8 @@ def cmd_explain(args: argparse.Namespace) -> int:
         return EXIT_INPUT_ERROR
     print(f"{spec.rule_id}  {spec.title}")
     print(f"Severity: {spec.severity}")
-    print(spec.description)
+    print(f"Why: {spec.description}")
+    print(f"Next: {spec.remediation}")
     if spec.standards:
         print("Relevant mappings: " + ", ".join(spec.standards))
     return EXIT_PASS
@@ -120,21 +195,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    check = subparsers.add_parser("check", help="evaluate a JSONL trace")
+    demo = subparsers.add_parser("demo", help="see a secure and a deliberately broken approval flow")
+    demo.add_argument("scenario", nargs="?", choices=SCENARIOS)
+    demo.add_argument("--list", action="store_true")
+    demo.add_argument("--write", help="write one synthetic scenario to JSONL")
+    demo.add_argument("--policy")
+    demo.add_argument("--json", dest="json_output")
+    demo.add_argument("--sarif")
+    demo.set_defaults(func=cmd_demo)
+
+    doctor = subparsers.add_parser("doctor", help="detect coding-agent integrations available on this machine")
+    doctor.set_defaults(func=cmd_doctor)
+
+    live_test = subparsers.add_parser("test", help="run a live approval-integrity test against a supported agent")
+    live_test.add_argument("agent", choices=("claude",))
+    live_test.set_defaults(func=cmd_test)
+
+    check = subparsers.add_parser("check", help="evaluate an existing AgentAck JSONL trace")
     check.add_argument("trace")
     check.add_argument("--policy")
     check.add_argument("--json", dest="json_output")
     check.add_argument("--sarif")
     check.set_defaults(func=cmd_check)
-
-    demo = subparsers.add_parser("demo", help="run a deterministic synthetic scenario")
-    demo.add_argument("scenario", nargs="?", default="secure", choices=SCENARIOS)
-    demo.add_argument("--list", action="store_true")
-    demo.add_argument("--write", help="write the synthetic trace to JSONL")
-    demo.add_argument("--policy")
-    demo.add_argument("--json", dest="json_output")
-    demo.add_argument("--sarif")
-    demo.set_defaults(func=cmd_demo)
 
     init = subparsers.add_parser("init", help="write a starter policy")
     init.add_argument("path", nargs="?", default="agentack.toml")
@@ -145,15 +227,33 @@ def build_parser() -> argparse.ArgumentParser:
     rules.add_argument("--json", action="store_true")
     rules.set_defaults(func=cmd_rules)
 
-    explain = subparsers.add_parser("explain", help="explain one rule")
+    explain = subparsers.add_parser("explain", help="explain one rule and its next action")
     explain.add_argument("rule_id")
     explain.set_defaults(func=cmd_explain)
+
+    return parser
+
+
+def _private_hook_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="agentack _hook", add_help=False)
+    parser.add_argument("agent", choices=("claude",))
+    parser.add_argument(
+        "--event",
+        required=True,
+        choices=("PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionEnd"),
+    )
+    parser.add_argument("--capture", required=True)
+    parser.set_defaults(func=cmd_hook)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "_hook":
+        args = _private_hook_parser().parse_args(raw[1:])
+        return int(args.func(args))
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     return int(args.func(args))
 
 

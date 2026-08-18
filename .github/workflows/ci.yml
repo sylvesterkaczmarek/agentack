@@ -24,6 +24,8 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Smoke
         run: |
+          agentack demo
+          agentack doctor
           agentack demo secure
           set +e
           agentack demo action-swap
