@@ -9,7 +9,11 @@ AgentAck is designed to inspect evidence without executing the actions described
 - no filesystem mutation outside explicit report, policy or trace output paths selected by the user;
 - bounded JSONL line size and event count;
 - bounded JSON parameter nesting;
+- strict schema versioning;
+- duplicate JSON key rejection;
+- unknown field rejection;
 - deterministic action identity;
+- explicit tool/operation aliasing without fuzzy matching;
 - no dynamic imports from trace content;
 - no pickle or executable serialization formats.
 
@@ -17,13 +21,21 @@ AgentAck is designed to inspect evidence without executing the actions described
 
 The checker trusts its own process and policy file for evaluation. It does not automatically trust the event producer.
 
-An attacker controlling both the agent and the trace emitter could omit or fabricate events. Stronger deployments should place event capture at an independent action gateway, hook boundary, policy engine or execution mediator that the agent cannot rewrite.
+An attacker controlling both the agent and the trace emitter could omit or fabricate proposals, human presentations, decisions or executions. Stronger deployments should place event capture at an independent action gateway, hook boundary, policy engine or execution mediator that the agent cannot rewrite.
+
+## Human presentation evidence
+
+AgentAck distinguishes the proposed action from the action recorded as presented to a human. It can detect inconsistencies between proposal, presentation and execution.
+
+It cannot prove that the human actually saw, understood or approved the recorded presentation unless the integration that emits the evidence provides a trustworthy boundary for that claim.
 
 ## Action hashing
 
-SHA-256 action identity detects a difference between the action represented by the approval and the action represented by execution. It does not prove who created either event.
+SHA-256 action identity detects differences between structured action representations after explicit canonicalization. It does not prove who created an event and is not a digital signature.
 
-A future integration can sign events or reports, but signatures would still need a trustworthy key boundary and would establish provenance rather than factual truth.
+## Incomplete evidence
+
+Missing lifecycle evidence is not converted into a successful result. AgentAck returns `INCOMPLETE` when the available trace cannot establish approval integrity and no stronger security failure is demonstrated.
 
 ## Sensitive data
 

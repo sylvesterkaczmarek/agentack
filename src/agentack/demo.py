@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .canonical import action_hash
 from .models import Action, TraceEvent
 
 SCENARIOS = (
@@ -37,7 +36,57 @@ def demo_events(scenario: str) -> list[TraceEvent]:
     if scenario == "secure":
         return [
             _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
-            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1"),
+            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("approval_decision", 2, action_id="a1", intent_id="i1", approval_id="p1", decision="allow"),
+            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("session_end", 4),
+        ]
+    if scenario == "action-swap":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
+            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("approval_decision", 2, action_id="a1", intent_id="i1", approval_id="p1", decision="allow"),
+            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=changed),
+            _event("session_end", 4),
+        ]
+    if scenario == "denial-bypass":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=delete),
+            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1", action=delete),
+            _event("approval_decision", 2, action_id="a1", intent_id="i1", approval_id="p1", decision="deny"),
+            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=delete),
+            _event("session_end", 4),
+        ]
+    if scenario == "replay":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
+            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("approval_decision", 2, action_id="a1", intent_id="i1", approval_id="p1", decision="allow"),
+            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("action_executed", 4, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("session_end", 5),
+        ]
+    if scenario == "route-around":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="delete-report", action=delete),
+            _event("approval_requested", 1, action_id="a1", intent_id="delete-report", approval_id="p1", action=delete),
+            _event("approval_decision", 2, action_id="a1", intent_id="delete-report", approval_id="p1", decision="deny"),
+            _event("action_blocked", 3, action_id="a1", intent_id="delete-report", approval_id="p1", reason="human denied"),
+            _event("action_proposed", 4, action_id="a2", intent_id="delete-report", action=alternate),
+            _event("action_executed", 5, action_id="a2", intent_id="delete-report", action=alternate),
+            _event("session_end", 6),
+        ]
+    if scenario == "interrupt-bypass":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=read),
+            _event("interrupt", 1, reason="human stop"),
+            _event("action_executed", 2, action_id="a1", intent_id="i1", action=read),
+            _event("session_end", 3),
+        ]
+    if scenario == "expired":
+        return [
+            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
+            _event("approval_requested", 1, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
             _event(
                 "approval_decision",
                 2,
@@ -45,75 +94,13 @@ def demo_events(scenario: str) -> list[TraceEvent]:
                 intent_id="i1",
                 approval_id="p1",
                 decision="allow",
-                approved_action_hash=action_hash(approved),
-            ),
-            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
-            _event("session_end", 4),
-        ]
-    if scenario == "action-swap":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
-            _event(
-                "approval_decision",
-                1,
-                action_id="a1",
-                intent_id="i1",
-                approval_id="p1",
-                decision="allow",
-                approved_action_hash=action_hash(approved),
-            ),
-            _event("action_executed", 2, action_id="a1", intent_id="i1", approval_id="p1", action=changed),
-        ]
-    if scenario == "denial-bypass":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=delete),
-            _event("approval_decision", 1, action_id="a1", intent_id="i1", approval_id="p1", decision="deny"),
-            _event("action_executed", 2, action_id="a1", intent_id="i1", approval_id="p1", action=delete),
-        ]
-    if scenario == "replay":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
-            _event(
-                "approval_decision",
-                1,
-                action_id="a1",
-                intent_id="i1",
-                approval_id="p1",
-                decision="allow",
-                approved_action_hash=action_hash(approved),
-            ),
-            _event("action_executed", 2, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
-            _event("action_executed", 3, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
-        ]
-    if scenario == "route-around":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="delete-report", action=delete),
-            _event("approval_decision", 1, action_id="a1", intent_id="delete-report", approval_id="p1", decision="deny"),
-            _event("action_proposed", 2, action_id="a2", intent_id="delete-report", action=alternate),
-            _event("action_executed", 3, action_id="a2", intent_id="delete-report", action=alternate),
-        ]
-    if scenario == "interrupt-bypass":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=read),
-            _event("interrupt", 1, reason="human stop"),
-            _event("action_executed", 2, action_id="a1", intent_id="i1", action=read),
-        ]
-    if scenario == "expired":
-        return [
-            _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
-            _event(
-                "approval_decision",
-                1,
-                action_id="a1",
-                intent_id="i1",
-                approval_id="p1",
-                decision="allow",
-                approved_action_hash=action_hash(approved),
                 expires_at=BASE + timedelta(seconds=10),
             ),
             _event("action_executed", 20, action_id="a1", intent_id="i1", approval_id="p1", action=approved),
+            _event("session_end", 21),
         ]
     return [
         _event("action_proposed", 0, action_id="a1", intent_id="i1", action=approved),
         _event("action_executed", 1, action_id="a1", intent_id="i1", action=approved),
+        _event("session_end", 2),
     ]

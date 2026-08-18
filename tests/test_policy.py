@@ -12,6 +12,12 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(policy.requires_approval(Action("network", "request")))
         self.assertFalse(policy.requires_approval(Action("filesystem", "read")))
 
+    def test_alias_and_case_cannot_bypass_policy(self):
+        policy = Policy()
+        self.assertTrue(policy.requires_approval(Action("Shell", "RUN")))
+        self.assertTrue(policy.requires_approval(Action("Bash", "exec")))
+        self.assertTrue(policy.requires_approval(Action("terminal", "execute")))
+
     def test_policy_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.toml"

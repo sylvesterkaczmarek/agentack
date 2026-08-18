@@ -16,13 +16,16 @@ def render_text(report: EvaluationReport) -> str:
     lines.append(f"Findings: {len(report.findings)}")
     if not report.findings:
         lines.append("")
-        lines.append("No approval-integrity violations detected by the enabled rules.")
+        lines.append("Approval-integrity evidence is complete and no enabled rule failed.")
         return "\n".join(lines)
     lines.append("")
     for finding in report.findings:
         location = f" line {finding.line}" if finding.line is not None else ""
         lines.append(f"{finding.severity.upper():8} {finding.rule_id} {finding.title}{location}")
         lines.append(f"         {finding.message}")
+    if report.status == "INCOMPLETE":
+        lines.append("")
+        lines.append("Result is INCOMPLETE because the trace lacks evidence required to establish approval integrity.")
     return "\n".join(lines)
 
 

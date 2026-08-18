@@ -1,6 +1,6 @@
 """AgentAck public package interface."""
 
-from .canonical import action_hash
+from .canonical import action_hash, canonical_action_key, canonicalize_action
 from .engine import evaluate_events
 from .models import Action, EvaluationReport, Finding, TraceEvent
 from .policy import Policy
@@ -14,7 +14,9 @@ __all__ = [
     "Recorder",
     "TraceEvent",
     "action_hash",
+    "canonical_action_key",
+    "canonicalize_action",
     "evaluate_events",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

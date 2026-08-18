@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +27,11 @@ jobs:
           agentack demo secure
           set +e
           agentack demo action-swap
-          code=$?
+          fail_code=$?
+          agentack demo secure --write /tmp/agentack-secure.jsonl
+          head -n -1 /tmp/agentack-secure.jsonl > /tmp/agentack-incomplete.jsonl
+          agentack check /tmp/agentack-incomplete.jsonl
+          incomplete_code=$?
           set -e
-          test "$code" -eq 1
+          test "$fail_code" -eq 1
+          test "$incomplete_code" -eq 3

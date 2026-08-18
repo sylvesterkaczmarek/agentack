@@ -14,9 +14,22 @@ from .parser import read_jsonl, write_jsonl
 from .policy import Policy
 from .report import render_text, write_json_report, write_sarif
 
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_INPUT_ERROR = 2
+EXIT_INCOMPLETE = 3
+
 
 def _policy(path: str | None) -> Policy:
     return Policy.from_toml(path) if path else Policy()
+
+
+def _status_code(status: str) -> int:
+    return {
+        "PASS": EXIT_PASS,
+        "FAIL": EXIT_FAIL,
+        "INCOMPLETE": EXIT_INCOMPLETE,
+    }[status]
 
 
 def _emit_outputs(args: argparse.Namespace, report) -> None:  # type: ignore[no-untyped-def]
@@ -33,38 +46,38 @@ def cmd_check(args: argparse.Namespace) -> int:
         events = read_jsonl(args.trace)
     except (OSError, ValueError, TraceValidationError) as exc:
         print(f"agentack: input error: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_INPUT_ERROR
     report = evaluate_events(events, policy=policy, source=str(Path(args.trace)))
     _emit_outputs(args, report)
-    return 0 if report.status == "PASS" else 1
+    return _status_code(report.status)
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
     if args.list:
         for scenario in SCENARIOS:
             print(scenario)
-        return 0
+        return EXIT_PASS
     try:
         events = demo_events(args.scenario)
         policy = _policy(args.policy)
     except (ValueError, OSError) as exc:
         print(f"agentack: {exc}", file=sys.stderr)
-        return 2
+        return EXIT_INPUT_ERROR
     if args.write:
         write_jsonl(args.write, events)
     report = evaluate_events(events, policy=policy, source=f"demo:{args.scenario}")
     _emit_outputs(args, report)
-    return 0 if report.status == "PASS" else 1
+    return _status_code(report.status)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path(args.path)
     if target.exists() and not args.force:
         print(f"agentack: {target} already exists; use --force to replace it", file=sys.stderr)
-        return 2
+        return EXIT_INPUT_ERROR
     target.write_text(Policy().to_toml(), encoding="utf-8")
     print(f"Wrote {target}")
-    return 0
+    return EXIT_PASS
 
 
 def cmd_rules(args: argparse.Namespace) -> int:
@@ -79,10 +92,10 @@ def cmd_rules(args: argparse.Namespace) -> int:
             for rule_id, spec in RULES.items()
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return EXIT_PASS
     for rule_id, spec in RULES.items():
         print(f"{rule_id}  {spec.severity.upper():8}  {spec.title}")
-    return 0
+    return EXIT_PASS
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
@@ -90,13 +103,13 @@ def cmd_explain(args: argparse.Namespace) -> int:
     spec = RULES.get(rule_id)
     if spec is None:
         print(f"agentack: unknown rule {rule_id}", file=sys.stderr)
-        return 2
+        return EXIT_INPUT_ERROR
     print(f"{spec.rule_id}  {spec.title}")
     print(f"Severity: {spec.severity}")
     print(spec.description)
     if spec.standards:
         print("Relevant mappings: " + ", ".join(spec.standards))
-    return 0
+    return EXIT_PASS
 
 
 def build_parser() -> argparse.ArgumentParser:

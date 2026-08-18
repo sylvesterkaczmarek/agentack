@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from .models import TraceEvent, TraceValidationError
 
 MAX_LINE_BYTES = 1_000_000
 MAX_EVENTS = 100_000
+
+
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise TraceValidationError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
 
 
 def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceEvent]:
@@ -25,7 +35,9 @@ def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceE
             except UnicodeDecodeError as exc:
                 raise TraceValidationError(f"line {line_number} is not UTF-8") from exc
             try:
-                data = json.loads(decoded)
+                data = json.loads(decoded, object_pairs_hook=_strict_object)
+            except TraceValidationError as exc:
+                raise TraceValidationError(f"line {line_number}: {exc}") from exc
             except json.JSONDecodeError as exc:
                 raise TraceValidationError(f"line {line_number} is not valid JSON: {exc.msg}") from exc
             try:

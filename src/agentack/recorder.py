@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TextIO
 
-from .canonical import action_hash
 from .models import Action, TraceEvent
 
 
@@ -17,6 +16,7 @@ class Recorder:
         self.session_id = session_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._handle: TextIO = self.path.open("a" if append else "w", encoding="utf-8", newline="\n")
+        self._ended = False
 
     def close(self) -> None:
         if not self._handle.closed:
@@ -26,6 +26,8 @@ class Recorder:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+        if not self._ended:
+            self.end(reason="recorder context closed" if exc_type is None else "recorder context closed after error")
         self.close()
 
     @staticmethod
@@ -33,11 +35,13 @@ class Recorder:
         return datetime.now(timezone.utc)
 
     def _write(self, event: TraceEvent) -> None:
+        if self._ended:
+            raise RuntimeError("cannot record events after session_end")
         self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         self._handle.write("\n")
         self._handle.flush()
 
-    def propose(self, action_id: str, action: Action, *, intent_id: str | None = None) -> str:
+    def propose(self, action_id: str, action: Action, *, intent_id: str | None = None) -> None:
         self._write(
             TraceEvent(
                 type="action_proposed",
@@ -48,9 +52,15 @@ class Recorder:
                 action=action,
             )
         )
-        return action_hash(action)
 
-    def request_approval(self, approval_id: str, action_id: str, *, intent_id: str | None = None) -> None:
+    def request_approval(
+        self,
+        approval_id: str,
+        action_id: str,
+        presented_action: Action,
+        *,
+        intent_id: str | None = None,
+    ) -> None:
         self._write(
             TraceEvent(
                 type="approval_requested",
@@ -59,6 +69,7 @@ class Recorder:
                 approval_id=approval_id,
                 action_id=action_id,
                 intent_id=intent_id,
+                action=presented_action,
             )
         )
 
@@ -68,7 +79,6 @@ class Recorder:
         action_id: str,
         decision: str,
         *,
-        approved_action: Action | None = None,
         intent_id: str | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
@@ -84,7 +94,6 @@ class Recorder:
                 action_id=action_id,
                 intent_id=intent_id,
                 decision=decision,  # type: ignore[arg-type]
-                approved_action_hash=action_hash(approved_action) if approved_action is not None else None,
                 expires_at=(timestamp + timedelta(seconds=ttl_seconds)) if ttl_seconds is not None else None,
             )
         )
@@ -109,6 +118,26 @@ class Recorder:
             )
         )
 
+    def block(
+        self,
+        action_id: str,
+        *,
+        approval_id: str | None = None,
+        intent_id: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        self._write(
+            TraceEvent(
+                type="action_blocked",
+                timestamp=self._now(),
+                session_id=self.session_id,
+                action_id=action_id,
+                approval_id=approval_id,
+                intent_id=intent_id,
+                reason=reason,
+            )
+        )
+
     def interrupt(self, *, reason: str | None = None) -> None:
         self._write(
             TraceEvent(
@@ -118,3 +147,17 @@ class Recorder:
                 reason=reason,
             )
         )
+
+    def end(self, *, reason: str | None = None) -> None:
+        if self._ended:
+            return
+        event = TraceEvent(
+            type="session_end",
+            timestamp=self._now(),
+            session_id=self.session_id,
+            reason=reason,
+        )
+        self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        self._handle.write("\n")
+        self._handle.flush()
+        self._ended = True

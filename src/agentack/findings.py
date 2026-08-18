@@ -19,7 +19,7 @@ RULES: dict[str, RuleSpec] = {
         "ACK001",
         "high",
         "Required approval missing",
-        "A policy-covered action executed without a preceding human approval decision.",
+        "A policy-covered action executed without a referenced human approval lifecycle.",
         ("OWASP ASI09", "OWASP ASI02", "EU AI Act Article 14"),
     ),
     "ACK002": RuleSpec(
@@ -32,15 +32,15 @@ RULES: dict[str, RuleSpec] = {
     "ACK003": RuleSpec(
         "ACK003",
         "critical",
-        "Action changed after approval",
-        "The action that executed does not match the canonical action identity approved by the human.",
+        "Action identity changed",
+        "The proposed, human-presented, approved or executed action identity is inconsistent across the approval boundary.",
         ("OWASP ASI09", "EU AI Act Article 14"),
     ),
     "ACK004": RuleSpec(
         "ACK004",
         "high",
         "Approval replayed",
-        "A single-use approval was consumed by more than one execution.",
+        "A single-use approval was referenced by more than one execution.",
         ("OWASP ASI09", "OWASP ASI03", "EU AI Act Article 14"),
     ),
     "ACK005": RuleSpec(
@@ -53,8 +53,8 @@ RULES: dict[str, RuleSpec] = {
     "ACK006": RuleSpec(
         "ACK006",
         "high",
-        "Approval ordering invalid",
-        "An execution references an approval that was not established before execution.",
+        "Approval lifecycle invalid",
+        "Approval or action lifecycle events are ordered or linked in a way that cannot represent a valid approval flow.",
         ("OWASP ASI09", "EU AI Act Article 14"),
     ),
     "ACK007": RuleSpec(
@@ -75,7 +75,7 @@ RULES: dict[str, RuleSpec] = {
         "ACK009",
         "medium",
         "Approval evidence incomplete",
-        "Trace evidence is ambiguous or lacks fields needed to establish approval integrity.",
+        "Trace evidence is missing, ambiguous or insufficient to establish the required approval-integrity property.",
         ("EU AI Act Article 12", "EU AI Act Article 14"),
     ),
 }

@@ -1,5 +1,5 @@
-{"action":{"operation":"run","parameters":{"argv":["git","status"]},"resource":"workspace","tool":"shell"},"action_id":"a1","intent_id":"i1","session_id":"demo-session","timestamp":"2026-01-01T12:00:00Z","type":"action_proposed"}
-{"action_id":"a1","approval_id":"p1","intent_id":"i1","session_id":"demo-session","timestamp":"2026-01-01T12:00:01Z","type":"approval_requested"}
-{"action_id":"a1","approval_id":"p1","approved_action_hash":"19b3c47af2541c74387be225400999f72f4d91899b3456e15c87f16bb8a933d8","decision":"allow","intent_id":"i1","session_id":"demo-session","timestamp":"2026-01-01T12:00:02Z","type":"approval_decision"}
-{"action":{"operation":"run","parameters":{"argv":["git","status"]},"resource":"workspace","tool":"shell"},"action_id":"a1","approval_id":"p1","intent_id":"i1","session_id":"demo-session","timestamp":"2026-01-01T12:00:03Z","type":"action_executed"}
-{"session_id":"demo-session","timestamp":"2026-01-01T12:00:04Z","type":"session_end"}
+{"action":{"operation":"run","parameters":{"argv":["git","status"]},"resource":"workspace","tool":"shell"},"action_id":"a1","intent_id":"i1","schema_version":2,"session_id":"demo-session","timestamp":"2026-01-01T12:00:00Z","type":"action_proposed"}
+{"action":{"operation":"run","parameters":{"argv":["git","status"]},"resource":"workspace","tool":"shell"},"action_id":"a1","approval_id":"p1","intent_id":"i1","schema_version":2,"session_id":"demo-session","timestamp":"2026-01-01T12:00:01Z","type":"approval_requested"}
+{"action_id":"a1","approval_id":"p1","decision":"allow","intent_id":"i1","schema_version":2,"session_id":"demo-session","timestamp":"2026-01-01T12:00:02Z","type":"approval_decision"}
+{"action":{"operation":"run","parameters":{"argv":["git","status"]},"resource":"workspace","tool":"shell"},"action_id":"a1","approval_id":"p1","intent_id":"i1","schema_version":2,"session_id":"demo-session","timestamp":"2026-01-01T12:00:03Z","type":"action_executed"}
+{"schema_version":2,"session_id":"demo-session","timestamp":"2026-01-01T12:00:04Z","type":"session_end"}

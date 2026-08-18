@@ -5,6 +5,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .canonical import canonical_action_key
 from .models import Action
 
 DEFAULT_PATTERNS = (
@@ -28,8 +29,8 @@ class Policy:
     stop_is_terminal: bool = True
 
     def requires_approval(self, action: Action) -> bool:
-        key = f"{action.tool}:{action.operation}"
-        return any(fnmatch.fnmatchcase(key, pattern) for pattern in self.require_approval_for)
+        key = canonical_action_key(action)
+        return any(fnmatch.fnmatchcase(key, pattern.lower()) for pattern in self.require_approval_for)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> "Policy":
@@ -57,7 +58,7 @@ class Policy:
             if not isinstance(value, bool):
                 raise ValueError(f"{name} must be boolean")
         return cls(
-            require_approval_for=tuple(patterns),
+            require_approval_for=tuple(item.lower() for item in patterns),
             max_approval_age_seconds=max_age,
             approval_single_use=single_use,
             require_exact_action_binding=exact_binding,

@@ -1,6 +1,6 @@
 import unittest
 
-from agentack import Action, action_hash
+from agentack import Action, action_hash, canonical_action_key
 
 
 class CanonicalTests(unittest.TestCase):
@@ -13,6 +13,14 @@ class CanonicalTests(unittest.TestCase):
         first = Action("shell", "run", parameters={"argv": ["git", "status"]})
         second = Action("shell", "run", parameters={"argv": ["git", "push"]})
         self.assertNotEqual(action_hash(first), action_hash(second))
+
+    def test_explicit_tool_aliases_share_identity(self):
+        shell = Action("shell", "run", parameters={"argv": ["git", "status"]})
+        bash = Action("Bash", "EXEC", parameters={"argv": ["git", "status"]})
+        terminal = Action("terminal", "execute", parameters={"argv": ["git", "status"]})
+        self.assertEqual(action_hash(shell), action_hash(bash))
+        self.assertEqual(action_hash(shell), action_hash(terminal))
+        self.assertEqual(canonical_action_key(bash), "shell:run")
 
 
 if __name__ == "__main__":
