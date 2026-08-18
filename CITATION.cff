@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: AgentAck
+message: If you use or adapt this software, please cite it using this metadata.
+type: software
+authors:
+  - family-names: Kaczmarek
+    given-names: Sylvester
+repository-code: https://github.com/sylvesterkaczmarek/agentack
+url: https://github.com/sylvesterkaczmarek/agentack
+version: 0.1.0
+date-released: 2026-08-18
+license: MIT

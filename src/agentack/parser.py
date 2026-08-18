@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from .models import TraceEvent, TraceValidationError
+
+MAX_LINE_BYTES = 1_000_000
+MAX_EVENTS = 100_000
+
+
+def read_jsonl(path: str | Path, *, max_events: int = MAX_EVENTS) -> list[TraceEvent]:
+    source = Path(path)
+    events: list[TraceEvent] = []
+    with source.open("rb") as handle:
+        for line_number, raw in enumerate(handle, start=1):
+            if len(raw) > MAX_LINE_BYTES:
+                raise TraceValidationError(f"line {line_number} exceeds {MAX_LINE_BYTES} bytes")
+            if not raw.strip():
+                continue
+            if len(events) >= max_events:
+                raise TraceValidationError(f"trace exceeds maximum event count {max_events}")
+            try:
+                decoded = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise TraceValidationError(f"line {line_number} is not UTF-8") from exc
+            try:
+                data = json.loads(decoded)
+            except json.JSONDecodeError as exc:
+                raise TraceValidationError(f"line {line_number} is not valid JSON: {exc.msg}") from exc
+            try:
+                events.append(TraceEvent.from_dict(data, line=line_number))
+            except TraceValidationError as exc:
+                raise TraceValidationError(f"line {line_number}: {exc}") from exc
+    if not events:
+        raise TraceValidationError("trace contains no events")
+    session_ids = {event.session_id for event in events}
+    if len(session_ids) != 1:
+        raise TraceValidationError("one trace file must contain exactly one session_id")
+    return events
+
+
+def write_jsonl(path: str | Path, events: list[TraceEvent]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8", newline="\n") as handle:
+        for event in events:
+            handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+            handle.write("\n")

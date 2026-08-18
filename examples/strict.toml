@@ -1,0 +1,17 @@
+version = 1
+
+[approval]
+max_age_seconds = 180
+single_use = true
+exact_action_binding = true
+stop_is_terminal = true
+require_for = [
+  "shell:*",
+  "filesystem:write",
+  "filesystem:delete",
+  "network:*",
+  "mcp:*",
+  "deploy:*",
+  "credential:*",
+  "process:*",
+]
