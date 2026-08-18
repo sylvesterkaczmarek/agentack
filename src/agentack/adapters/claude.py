@@ -1,7 +1,7 @@
 """Claude Code adapter public facade."""
 
-import shutil
-import subprocess
+import shutil  # noqa: F401
+import subprocess  # noqa: F401
 
 from . import claude_live as _live
 from .claude_analysis import analyze_capture

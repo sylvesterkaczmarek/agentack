@@ -49,10 +49,11 @@ target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F"]
 ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true
 ignore_missing_imports = true
+
