@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .. import __version__
 from .base import AdapterStatus, AdapterTestResult, AgentAdapter, CheckResult
@@ -18,6 +18,65 @@ from .codex_protocol import (
     safe_version,
     start_ephemeral_thread,
 )
+
+
+def _account_ready(result: dict[str, Any]) -> tuple[bool, str]:
+    account = result.get("account")
+    requires_openai_auth = result.get("requiresOpenaiAuth")
+    if isinstance(account, dict):
+        return True, "Codex authentication is available."
+    if requires_openai_auth is False:
+        return True, "The configured Codex provider does not require OpenAI authentication."
+    if requires_openai_auth is True:
+        return False, "Codex CLI is installed but not authenticated. Run `codex login`, then retry."
+    return False, "Codex App Server returned an ambiguous account state; AgentAck will not start a live probe."
+
+
+def _probe_account_status(executable: str) -> tuple[bool, str]:
+    """Read Codex auth state through the official local App Server without starting a model turn."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="agentack-codex-account-") as directory:
+            root = Path(directory)
+            with CodexAppServer(executable, cwd=root, agentack_version=__version__) as server:
+                result = server.request("account/read", {"refreshToken": False}, timeout=10)
+        return _account_ready(result)
+    except (OSError, CodexAppServerError, ValueError) as exc:
+        return False, f"Codex App Server account preflight failed: {exc}"
+
+
+class _ProbePolicyServer:
+    """Delegate App Server traffic while pinning safe deterministic turn permissions for AgentAck probes."""
+
+    def __init__(self, server: CodexAppServer, root: Path) -> None:
+        self._server = server
+        self._root = root.resolve()
+
+    def request(self, method: str, params: dict[str, Any], *, timeout: float = 20) -> dict[str, Any]:
+        if method == "turn/start":
+            params = dict(params)
+            params.update(
+                {
+                    "approvalPolicy": "untrusted",
+                    "approvalsReviewer": "user",
+                    "sandboxPolicy": {
+                        "type": "workspaceWrite",
+                        "writableRoots": [str(self._root)],
+                        "networkAccess": False,
+                        "excludeTmpdirEnvVar": True,
+                        "excludeSlashTmp": True,
+                    },
+                }
+            )
+        return self._server.request(method, params, timeout=timeout)
+
+    def next_message(self, *, timeout: float = 60) -> dict[str, Any]:
+        return self._server.next_message(timeout=timeout)
+
+    def respond(self, request_id: Any, result: dict[str, Any]) -> None:
+        self._server.respond(request_id, result)
+
+    def reject_unknown_request(self, request_id: Any) -> None:
+        self._server.reject_unknown_request(request_id)
 
 
 class CodexCLIAdapter(AgentAdapter):
@@ -50,17 +109,28 @@ class CodexCLIAdapter(AgentAdapter):
                 detail="The Codex live probes currently require a POSIX shell. On Windows, run AgentAck and Codex inside WSL.",
             )
         supported, detail = detect_app_server_capabilities(executable)
+        if not supported:
+            return AdapterStatus(
+                name=self.name,
+                display_name=self.display_name,
+                installed=True,
+                testable=False,
+                executable=executable,
+                version=version,
+                detail=detail,
+            )
+        account_ready, account_detail = _probe_account_status(executable)
         return AdapterStatus(
             name=self.name,
             display_name=self.display_name,
             installed=True,
-            testable=supported,
+            testable=account_ready,
             executable=executable,
             version=version,
             detail=(
                 "Live suite uses official Codex App Server approval, commandExecution, and turn/interrupt lifecycle evidence."
-                if supported
-                else detail
+                if account_ready
+                else account_detail
             ),
         )
 
@@ -82,9 +152,9 @@ class CodexCLIAdapter(AgentAdapter):
                 status="INCOMPLETE",
                 checks=(
                     CheckResult(
-                        "Codex App Server capability",
+                        "Codex readiness",
                         "INCOMPLETE",
-                        status.detail or "The installed Codex build does not expose the structured evidence AgentAck requires.",
+                        status.detail or "The installed Codex build is not ready for AgentAck's structured live probe.",
                     ),
                 ),
                 adapter_version=status.version,
@@ -96,12 +166,24 @@ class CodexCLIAdapter(AgentAdapter):
         print(f"3. DENY route A:         {DENY_COMMAND}")
         print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
+        print("AgentAck pins each turn to workspace-write + untrusted approval so synthetic writes must cross the approval gate.")
         print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
 
         try:
             with tempfile.TemporaryDirectory(prefix="agentack-codex-") as directory:
                 root = Path(directory)
-                with CodexAppServer(status.executable, cwd=root, agentack_version=__version__) as server:
+                with CodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
+                    account_result = raw_server.request("account/read", {"refreshToken": False}, timeout=10)
+                    account_ready, account_detail = _account_ready(account_result)
+                    if not account_ready:
+                        return AdapterTestResult(
+                            adapter=self.name,
+                            display_name=self.display_name,
+                            status="INCOMPLETE",
+                            checks=(CheckResult("Codex authentication", "INCOMPLETE", account_detail),),
+                            adapter_version=status.version,
+                        )
+                    server = _ProbePolicyServer(raw_server, root)
                     thread_id = start_ephemeral_thread(server, root)
                     approve = run_probe_turn(
                         server,

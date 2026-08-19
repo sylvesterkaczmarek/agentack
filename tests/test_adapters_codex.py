@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agentack.adapters.codex import CodexCLIAdapter
+from agentack.adapters.codex import CodexCLIAdapter, _ProbePolicyServer, _account_ready
 from agentack.adapters.codex_analysis import (
     APPROVE_COMMAND,
     DENY_COMMAND,
@@ -29,6 +29,10 @@ class FakeServer:
         self.requests.append((method, params, timeout))
         if method == "turn/interrupt":
             return {}
+        if method == "thread/start":
+            return {"thread": {"id": "thr-1"}}
+        if method == "account/read":
+            return {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}
         return {"turn": {"id": "turn-1"}}
 
     def next_message(self, timeout=60):
@@ -191,6 +195,27 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIn(unexpected, evidence.unexpected_commands)
         self.assertEqual(server.responses, [(72, {"decision": "decline"})])
 
+    def test_probe_policy_pins_untrusted_workspace_write_per_turn(self):
+        server = FakeServer([])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wrapped = _ProbePolicyServer(server, root)
+            wrapped.request("turn/start", {"threadId": "thr-1", "input": []})
+        method, params, _timeout = server.requests[-1]
+        self.assertEqual(method, "turn/start")
+        self.assertEqual(params["approvalPolicy"], "untrusted")
+        self.assertEqual(params["approvalsReviewer"], "user")
+        self.assertEqual(params["sandboxPolicy"]["type"], "workspaceWrite")
+        self.assertEqual(params["sandboxPolicy"]["networkAccess"], False)
+        self.assertEqual(len(params["sandboxPolicy"]["writableRoots"]), 1)
+
+    def test_account_preflight_handles_chatgpt_local_and_missing_auth(self):
+        self.assertTrue(_account_ready({"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True})[0])
+        self.assertTrue(_account_ready({"account": None, "requiresOpenaiAuth": False})[0])
+        ready, detail = _account_ready({"account": None, "requiresOpenaiAuth": True})
+        self.assertFalse(ready)
+        self.assertIn("codex login", detail)
+
     def test_capability_detection_requires_approval_and_interrupt_schema(self):
         def fake_run(command, **kwargs):
             out = Path(command[command.index("--out") + 1])
@@ -228,10 +253,26 @@ class CodexAdapterTests(unittest.TestCase):
             "agentack.adapters.codex.safe_version", return_value="codex-cli future-build"
         ), mock.patch(
             "agentack.adapters.codex.detect_app_server_capabilities", return_value=(True, "available")
+        ), mock.patch(
+            "agentack.adapters.codex._probe_account_status", return_value=(True, "authenticated")
         ), mock.patch("agentack.adapters.codex.os.name", "posix"):
             status = CodexCLIAdapter().detect()
         self.assertTrue(status.testable)
         self.assertEqual(status.version, "codex-cli future-build")
+
+    def test_detect_reports_authentication_required(self):
+        with mock.patch("agentack.adapters.codex.shutil.which", return_value="/fake/codex"), mock.patch(
+            "agentack.adapters.codex.safe_version", return_value="codex-cli 0.148.0"
+        ), mock.patch(
+            "agentack.adapters.codex.detect_app_server_capabilities", return_value=(True, "available")
+        ), mock.patch(
+            "agentack.adapters.codex._probe_account_status",
+            return_value=(False, "Codex CLI is installed but not authenticated. Run `codex login`, then retry."),
+        ), mock.patch("agentack.adapters.codex.os.name", "posix"):
+            status = CodexCLIAdapter().detect()
+        self.assertTrue(status.installed)
+        self.assertFalse(status.testable)
+        self.assertIn("codex login", status.detail)
 
     @mock.patch("agentack.adapters.codex.shutil.which", return_value=None)
     def test_detect_reports_missing_codex(self, _which):
