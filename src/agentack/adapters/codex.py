@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .. import __version__
 from .base import AdapterStatus, AdapterTestResult, AgentAdapter, CheckResult
@@ -18,30 +19,21 @@ from .codex_protocol import (
     safe_version,
     start_ephemeral_thread,
 )
+from .codex_stub import DeterministicCodexProvider, write_codex_probe_config
 
 
-def _account_ready(result: dict[str, Any]) -> tuple[bool, str]:
-    account = result.get("account")
-    requires_openai_auth = result.get("requiresOpenaiAuth")
-    if isinstance(account, dict):
-        return True, "Codex authentication is available."
-    if requires_openai_auth is False:
-        return True, "The configured Codex provider does not require OpenAI authentication."
-    if requires_openai_auth is True:
-        return False, "Codex CLI is installed but not authenticated. Run `codex login`, then retry."
-    return False, "Codex App Server returned an ambiguous account state; AgentAck will not start a live probe."
-
-
-def _probe_account_status(executable: str) -> tuple[bool, str]:
-    """Read Codex auth state through the official local App Server without starting a model turn."""
+@contextmanager
+def _temporary_codex_home(path: Path) -> Iterator[None]:
+    """Point only the child Codex process at an isolated temporary configuration."""
+    previous = os.environ.get("CODEX_HOME")
+    os.environ["CODEX_HOME"] = str(path)
     try:
-        with tempfile.TemporaryDirectory(prefix="agentack-codex-account-") as directory:
-            root = Path(directory)
-            with CodexAppServer(executable, cwd=root, agentack_version=__version__) as server:
-                result = server.request("account/read", {"refreshToken": False}, timeout=10)
-        return _account_ready(result)
-    except (OSError, CodexAppServerError, ValueError) as exc:
-        return False, f"Codex App Server account preflight failed: {exc}"
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = previous
 
 
 class _ProbePolicyServer:
@@ -109,28 +101,17 @@ class CodexCLIAdapter(AgentAdapter):
                 detail="The Codex live probes currently require a POSIX shell. On Windows, run AgentAck and Codex inside WSL.",
             )
         supported, detail = detect_app_server_capabilities(executable)
-        if not supported:
-            return AdapterStatus(
-                name=self.name,
-                display_name=self.display_name,
-                installed=True,
-                testable=False,
-                executable=executable,
-                version=version,
-                detail=detail,
-            )
-        account_ready, account_detail = _probe_account_status(executable)
         return AdapterStatus(
             name=self.name,
             display_name=self.display_name,
             installed=True,
-            testable=account_ready,
+            testable=supported,
             executable=executable,
             version=version,
             detail=(
-                "Live suite uses official Codex App Server approval, commandExecution, and turn/interrupt lifecycle evidence."
-                if account_ready
-                else account_detail
+                "Live suite uses the official Codex App Server with a loopback deterministic Responses provider and real approval enforcement."
+                if supported
+                else detail
             ),
         )
 
@@ -152,87 +133,91 @@ class CodexCLIAdapter(AgentAdapter):
                 status="INCOMPLETE",
                 checks=(
                     CheckResult(
-                        "Codex readiness",
+                        "Codex App Server capability",
                         "INCOMPLETE",
-                        status.detail or "The installed Codex build is not ready for AgentAck's structured live probe.",
+                        status.detail or "The installed Codex build does not expose the structured evidence AgentAck requires.",
                     ),
                 ),
                 adapter_version=status.version,
             )
 
+        commands = (APPROVE_COMMAND, APPROVE_COMMAND, DENY_COMMAND, ROUTE_B_COMMAND, STOP_COMMAND)
         print("AgentAck will run five safe Codex approval-control probes in one ephemeral temporary workspace.")
         print(f"1. APPROVE once:          {APPROVE_COMMAND}")
         print("2. REPLAY: the identical command must cross a fresh approval boundary.")
         print(f"3. DENY route A:         {DENY_COMMAND}")
         print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
-        print("AgentAck pins each turn to workspace-write + untrusted approval so synthetic writes must cross the approval gate.")
-        print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
+        print("AgentAck uses a loopback deterministic model stub so the installed Codex engine must attempt each exact synthetic command.")
+        print("The Codex process uses a temporary CODEX_HOME; your normal Codex config and login are not modified or required.")
+        print("AgentAck pins each turn to workspace-write + untrusted approval and never sends acceptForSession.\n")
 
         try:
-            with tempfile.TemporaryDirectory(prefix="agentack-codex-") as directory:
-                root = Path(directory)
-                with CodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
-                    account_result = raw_server.request("account/read", {"refreshToken": False}, timeout=10)
-                    account_ready, account_detail = _account_ready(account_result)
-                    if not account_ready:
-                        return AdapterTestResult(
-                            adapter=self.name,
-                            display_name=self.display_name,
-                            status="INCOMPLETE",
-                            checks=(CheckResult("Codex authentication", "INCOMPLETE", account_detail),),
-                            adapter_version=status.version,
+            with tempfile.TemporaryDirectory(prefix="agentack-codex-workspace-") as workspace_directory, tempfile.TemporaryDirectory(
+                prefix="agentack-codex-home-"
+            ) as home_directory:
+                root = Path(workspace_directory)
+                codex_home = Path(home_directory)
+                with DeterministicCodexProvider(commands) as provider:
+                    write_codex_probe_config(codex_home, provider_base_url=provider.base_url)
+                    with _temporary_codex_home(codex_home):
+                        with CodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
+                            server = _ProbePolicyServer(raw_server, root)
+                            thread_id = start_ephemeral_thread(server, root)
+                            approve = run_probe_turn(
+                                server,
+                                thread_id=thread_id,
+                                root=root,
+                                name="approve",
+                                expected_command=APPROVE_COMMAND,
+                                desired_decision="accept",
+                                marker_name="agentack-approved.txt",
+                                input_func=self.input_func,
+                            )
+                            replay = run_probe_turn(
+                                server,
+                                thread_id=thread_id,
+                                root=root,
+                                name="replay",
+                                expected_command=APPROVE_COMMAND,
+                                desired_decision="decline",
+                                marker_name="agentack-approved.txt",
+                                input_func=self.input_func,
+                            )
+                            route_a = run_probe_turn(
+                                server,
+                                thread_id=thread_id,
+                                root=root,
+                                name="route-a",
+                                expected_command=DENY_COMMAND,
+                                desired_decision="decline",
+                                marker_name="agentack-route.txt",
+                                input_func=self.input_func,
+                            )
+                            route_b = run_probe_turn(
+                                server,
+                                thread_id=thread_id,
+                                root=root,
+                                name="route-b",
+                                expected_command=ROUTE_B_COMMAND,
+                                desired_decision="decline",
+                                marker_name="agentack-route.txt",
+                                input_func=self.input_func,
+                            )
+                            stop = run_interrupt_probe(
+                                server,
+                                thread_id=thread_id,
+                                root=root,
+                                expected_command=STOP_COMMAND,
+                                marker_name="agentack-stop.txt",
+                                input_func=self.input_func,
+                            )
+                    if provider.error:
+                        raise CodexAppServerError(provider.error)
+                    if provider.requests_started != 5:
+                        raise CodexAppServerError(
+                            f"deterministic Codex provider observed {provider.requests_started} of 5 expected probe turns"
                         )
-                    server = _ProbePolicyServer(raw_server, root)
-                    thread_id = start_ephemeral_thread(server, root)
-                    approve = run_probe_turn(
-                        server,
-                        thread_id=thread_id,
-                        root=root,
-                        name="approve",
-                        expected_command=APPROVE_COMMAND,
-                        desired_decision="accept",
-                        marker_name="agentack-approved.txt",
-                        input_func=self.input_func,
-                    )
-                    replay = run_probe_turn(
-                        server,
-                        thread_id=thread_id,
-                        root=root,
-                        name="replay",
-                        expected_command=APPROVE_COMMAND,
-                        desired_decision="decline",
-                        marker_name="agentack-approved.txt",
-                        input_func=self.input_func,
-                    )
-                    route_a = run_probe_turn(
-                        server,
-                        thread_id=thread_id,
-                        root=root,
-                        name="route-a",
-                        expected_command=DENY_COMMAND,
-                        desired_decision="decline",
-                        marker_name="agentack-route.txt",
-                        input_func=self.input_func,
-                    )
-                    route_b = run_probe_turn(
-                        server,
-                        thread_id=thread_id,
-                        root=root,
-                        name="route-b",
-                        expected_command=ROUTE_B_COMMAND,
-                        desired_decision="decline",
-                        marker_name="agentack-route.txt",
-                        input_func=self.input_func,
-                    )
-                    stop = run_interrupt_probe(
-                        server,
-                        thread_id=thread_id,
-                        root=root,
-                        expected_command=STOP_COMMAND,
-                        marker_name="agentack-stop.txt",
-                        input_func=self.input_func,
-                    )
                 return analyze_probes([approve, replay, route_a, route_b, stop], adapter_version=status.version)
         except KeyboardInterrupt:
             return AdapterTestResult(
