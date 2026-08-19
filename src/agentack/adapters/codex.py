@@ -17,7 +17,6 @@ from .codex_protocol import (
     run_interrupt_probe,
     run_probe_turn,
     safe_version,
-    start_ephemeral_thread,
 )
 from .codex_stub import DeterministicCodexProvider, write_codex_probe_config
 
@@ -37,13 +36,7 @@ def _temporary_codex_home(path: Path) -> Iterator[None]:
 
 
 class _ExperimentalCodexAppServer(CodexAppServer):
-    """Codex client that opts into the structured experimental App Server surface.
-
-    Codex 0.148's own App Server integration client initializes every connection
-    with ``capabilities.experimentalApi = true``. AgentAck relies on that same
-    structured approval/turn surface and therefore advertises the capability
-    explicitly rather than depending on an implicit server default.
-    """
+    """Codex client that opts into the structured experimental App Server surface."""
 
     def request(self, method: str, params: dict[str, Any], *, timeout: float = 20) -> dict[str, Any]:
         if method == "initialize":
@@ -60,8 +53,6 @@ class _ProbePolicyServer:
 
     def __init__(self, server: CodexAppServer, root: Path) -> None:
         self._server = server
-        # Resolve the disposable workspace now so callers cannot swap its meaning
-        # during the session. The read-only sandbox itself does not need a writable root.
         self._root = root.resolve()
 
     def request(self, method: str, params: dict[str, Any], *, timeout: float = 20) -> dict[str, Any]:
@@ -72,9 +63,6 @@ class _ProbePolicyServer:
                     "cwd": str(self._root),
                     "approvalPolicy": "untrusted",
                     "approvalsReviewer": "user",
-                    # Match Codex 0.148's App Server approval tests: the exact
-                    # harmless marker write must cross a sandbox-escape approval
-                    # boundary instead of being writable inside the sandbox.
                     "sandboxPolicy": {"type": "readOnly"},
                 }
             )
@@ -88,6 +76,30 @@ class _ProbePolicyServer:
 
     def reject_unknown_request(self, request_id: Any) -> None:
         self._server.reject_unknown_request(request_id)
+
+
+def _start_probe_thread(server: CodexAppServer, root: Path) -> str:
+    """Start a normal thread inside the disposable CODEX_HOME.
+
+    Codex 0.148's App Server approval fixture uses a materialized thread rather
+    than an ephemeral one. The entire AgentAck CODEX_HOME is temporary, so this
+    matches that lifecycle without leaving thread history in the user's Codex home.
+    """
+    result = server.request(
+        "thread/start",
+        {
+            "cwd": str(root.resolve()),
+            "ephemeral": False,
+            "sandbox": "read-only",
+            "approvalPolicy": "untrusted",
+            "approvalsReviewer": "user",
+        },
+        timeout=20,
+    )
+    thread = result.get("thread")
+    if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+        raise CodexAppServerError("thread/start did not return a thread id")
+    return thread["id"]
 
 
 def _safe_probe_summary(probes: list[Any]) -> str:
@@ -176,14 +188,14 @@ class CodexCLIAdapter(AgentAdapter):
             )
 
         commands = (APPROVE_COMMAND, APPROVE_COMMAND, DENY_COMMAND, ROUTE_B_COMMAND, STOP_COMMAND)
-        print("AgentAck will run five safe Codex approval-control probes in one ephemeral temporary workspace.")
+        print("AgentAck will run five safe Codex approval-control probes in one disposable temporary workspace.")
         print(f"1. APPROVE once:          {APPROVE_COMMAND}")
         print("2. REPLAY: the identical command must cross a fresh approval boundary.")
         print(f"3. DENY route A:         {DENY_COMMAND}")
         print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
         print("AgentAck uses a loopback deterministic model stub so the installed Codex engine must attempt each exact synthetic command.")
-        print("The Codex process uses a temporary CODEX_HOME; your normal Codex config and login are not modified or required.")
+        print("The Codex process uses a temporary CODEX_HOME; its materialized probe thread and all state are deleted when the test exits.")
         print("Each turn uses read-only + untrusted approval, so the exact marker write must cross Codex's approval boundary.")
         print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
 
@@ -198,7 +210,7 @@ class CodexCLIAdapter(AgentAdapter):
                     with _temporary_codex_home(codex_home):
                         with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
                             server = _ProbePolicyServer(raw_server, root)
-                            thread_id = start_ephemeral_thread(server, root)
+                            thread_id = _start_probe_thread(server, root)
                             approve = run_probe_turn(
                                 server,
                                 thread_id=thread_id,
