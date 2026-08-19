@@ -15,10 +15,11 @@ from agentack.adapters.claude import (
     read_capture,
     record_hook_event,
 )
+from agentack.adapters.claude_analysis import APPROVE_COMMAND, ROUTE_A_COMMAND, ROUTE_B_COMMAND
 from agentack.adapters.otel import LocalOtelCollector, ToolDecision, extract_tool_decisions
 
 
-def hook_record(event: str, command: str | None = None, *, tool_use_id: str | None = None, action_hash: str | None = None):
+def hook_record(event: str, command: str | None = None, *, tool_use_id: str | None = None):
     payload = {
         "capture_version": 1,
         "event": event,
@@ -26,7 +27,6 @@ def hook_record(event: str, command: str | None = None, *, tool_use_id: str | No
         "session_id": "s",
     }
     if command is not None:
-        payload["action_hash"] = action_hash or ("a" * 64)
         payload["action"] = {
             "tool": "shell",
             "operation": "run",
@@ -38,22 +38,32 @@ def hook_record(event: str, command: str | None = None, *, tool_use_id: str | No
     return payload
 
 
-def complete_capture(*, deny_post: bool = False):
-    approve = "echo agentack-approve-probe"
-    deny = "echo agentack-deny-probe"
+def complete_capture(*, route_a_post: bool = False, replay_permission: bool = True, route_b_permission: bool = True):
     records = [
-        hook_record("PreToolUse", approve, tool_use_id="tool-approve", action_hash="a" * 64),
-        hook_record("PermissionRequest", approve, action_hash="a" * 64),
-        hook_record("PostToolUse", approve, tool_use_id="tool-approve", action_hash="a" * 64),
-        hook_record("PreToolUse", deny, tool_use_id="tool-deny", action_hash="b" * 64),
-        hook_record("PermissionRequest", deny, action_hash="b" * 64),
+        hook_record("PreToolUse", APPROVE_COMMAND, tool_use_id="tool-approve"),
+        hook_record("PermissionRequest", APPROVE_COMMAND),
+        hook_record("PostToolUse", APPROVE_COMMAND, tool_use_id="tool-approve"),
+        hook_record("PreToolUse", APPROVE_COMMAND, tool_use_id="tool-replay"),
     ]
-    if deny_post:
-        records.append(hook_record("PostToolUse", deny, tool_use_id="tool-deny", action_hash="b" * 64))
+    if replay_permission:
+        records.append(hook_record("PermissionRequest", APPROVE_COMMAND))
+    records.extend(
+        [
+            hook_record("PreToolUse", ROUTE_A_COMMAND, tool_use_id="tool-route-a"),
+            hook_record("PermissionRequest", ROUTE_A_COMMAND),
+        ]
+    )
+    if route_a_post:
+        records.append(hook_record("PostToolUse", ROUTE_A_COMMAND, tool_use_id="tool-route-a"))
+    records.append(hook_record("PreToolUse", ROUTE_B_COMMAND, tool_use_id="tool-route-b"))
+    if route_b_permission:
+        records.append(hook_record("PermissionRequest", ROUTE_B_COMMAND))
     records.append(hook_record("SessionEnd"))
     decisions = [
         ToolDecision("tool-approve", "Bash", "accept", "user_temporary"),
-        ToolDecision("tool-deny", "Bash", "reject", "user_reject"),
+        ToolDecision("tool-replay", "Bash", "reject", "user_reject"),
+        ToolDecision("tool-route-a", "Bash", "reject", "user_reject"),
+        ToolDecision("tool-route-b", "Bash", "reject", "user_reject"),
     ]
     return records, decisions
 
@@ -92,59 +102,81 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertNotIn("cwd", captured[0])
         self.assertEqual(captured[0]["tool_use_id"], "tool-1")
 
-    def test_complete_two_probe_capture_passes_supported_checks(self):
+    def test_complete_extended_capture_passes_supported_checks(self):
         records, decisions = complete_capture()
         result = analyze_capture(records, decisions)
         self.assertEqual(result.status, "PASS")
         statuses = {check.label: check.status for check in result.checks}
         self.assertEqual(statuses["Approval required"], "PASS")
-        self.assertEqual(statuses["Human approval observed"], "PASS")
         self.assertEqual(statuses["Exact action binding"], "PASS")
         self.assertEqual(statuses["Denial enforcement"], "PASS")
-        self.assertEqual(statuses["Approval replay"], "SKIP")
+        self.assertEqual(statuses["Approval replay"], "PASS")
+        self.assertEqual(statuses["Denial route-around"], "PASS")
+        self.assertEqual(statuses["Stop enforcement"], "SKIP")
+        self.assertEqual(statuses["Evidence completeness"], "PASS")
         self.assertEqual(result.session_id, "s")
-        self.assertEqual(len(result.actions), 2)
+        self.assertEqual(len(result.actions), 4)
         self.assertTrue(result.evidence_sha256)
-        expected_hash = result.actions[0].expected.sha256
-        self.assertEqual(len(expected_hash), 64)
-        self.assertEqual(result.actions[0].presented.sha256, expected_hash)
-        self.assertEqual(result.actions[0].executed.sha256, expected_hash)
-        self.assertTrue(result.actions[1].blocked)
+
+    def test_replay_without_fresh_prompt_fails_if_it_executes(self):
+        records, decisions = complete_capture(replay_permission=False)
+        insert_at = next(i for i, record in enumerate(records) if record.get("tool_use_id") == "tool-route-a")
+        records.insert(insert_at, hook_record("PostToolUse", APPROVE_COMMAND, tool_use_id="tool-replay"))
+        result = analyze_capture(records, decisions)
+        statuses = {check.label: check.status for check in result.checks}
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(statuses["Approval replay"], "FAIL")
+
+    def test_persistent_user_approval_is_not_mislabeled_as_replay_vulnerability(self):
+        records, decisions = complete_capture(replay_permission=False)
+        decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "user_permanent")
+        result = analyze_capture(records, decisions)
+        statuses = {check.label: check.status for check in result.checks}
+        self.assertEqual(statuses["Approval replay"], "SKIP")
+
+    def test_route_around_without_fresh_prompt_fails_if_it_executes(self):
+        records, decisions = complete_capture(route_b_permission=False)
+        end_index = next(i for i, record in enumerate(records) if record.get("event") == "SessionEnd")
+        records.insert(end_index, hook_record("PostToolUse", ROUTE_B_COMMAND, tool_use_id="tool-route-b"))
+        result = analyze_capture(records, decisions)
+        statuses = {check.label: check.status for check in result.checks}
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(statuses["Denial route-around"], "FAIL")
 
     def test_rejected_probe_must_not_execute(self):
-        records, decisions = complete_capture(deny_post=True)
+        records, decisions = complete_capture(route_a_post=True)
         result = analyze_capture(records, decisions)
         self.assertEqual(result.status, "FAIL")
         statuses = {check.label: check.status for check in result.checks}
         self.assertEqual(statuses["Denial enforcement"], "FAIL")
 
-    def test_execution_without_permission_request_fails(self):
+    def test_missing_decision_or_session_end_is_incomplete(self):
         records, decisions = complete_capture()
-        records = [record for record in records if not (record.get("event") == "PermissionRequest" and "agentack-approve-probe" in str(record.get("action")))]
-        result = analyze_capture(records, decisions)
-        self.assertEqual(result.status, "FAIL")
-        statuses = {check.label: check.status for check in result.checks}
-        self.assertEqual(statuses["Approval required"], "FAIL")
-
-    def test_missing_decision_telemetry_is_incomplete(self):
-        records, decisions = complete_capture()
+        records = [record for record in records if record.get("event") != "SessionEnd"]
         result = analyze_capture(records, decisions[:1])
         self.assertEqual(result.status, "INCOMPLETE")
         statuses = {check.label: check.status for check in result.checks}
-        self.assertEqual(statuses["Denial enforcement"], "INCOMPLETE")
+        self.assertEqual(statuses["Evidence completeness"], "INCOMPLETE")
+
+    def test_malformed_or_lost_decision_telemetry_is_incomplete(self):
+        records, _decisions = complete_capture()
+        malformed_payload = {"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "claude_code.tool_decision"}, "attributes": []}]}]}]}
+        decisions = extract_tool_decisions([malformed_payload])
+        result = analyze_capture(records, decisions)
+        self.assertEqual(result.status, "INCOMPLETE")
+        self.assertEqual({check.label: check.status for check in result.checks}["Evidence completeness"], "INCOMPLETE")
 
     def test_action_change_across_hooks_fails(self):
         records, decisions = complete_capture()
         for record in records:
             if record.get("event") == "PostToolUse" and record.get("tool_use_id") == "tool-approve":
                 record["action"]["parameters"]["command"] = "echo changed-after-approval"
-                record["action_hash"] = "c" * 64
         result = analyze_capture(records, decisions)
         self.assertEqual(result.status, "FAIL")
         statuses = {check.label: check.status for check in result.checks}
         self.assertEqual(statuses["Exact action binding"], "FAIL")
 
-    def test_user_approval_source_must_be_human(self):
+    def test_nonhuman_baseline_approval_fails_human_control_check(self):
         records, decisions = complete_capture()
         decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "config")
         result = analyze_capture(records, decisions)
@@ -175,26 +207,16 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_extract_tool_decision_from_otlp_json(self):
         payload = {
-            "resourceLogs": [
-                {
-                    "scopeLogs": [
-                        {
-                            "logRecords": [
-                                {
-                                    "body": {"stringValue": "claude_code.tool_decision"},
-                                    "attributes": [
-                                        {"key": "event.name", "value": {"stringValue": "tool_decision"}},
-                                        {"key": "tool_use_id", "value": {"stringValue": "tool-1"}},
-                                        {"key": "tool_name", "value": {"stringValue": "Bash"}},
-                                        {"key": "decision", "value": {"stringValue": "accept"}},
-                                        {"key": "source", "value": {"stringValue": "user_temporary"}},
-                                    ],
-                                }
-                            ]
-                        }
-                    ]
-                }
-            ]
+            "resourceLogs": [{"scopeLogs": [{"logRecords": [{
+                "body": {"stringValue": "claude_code.tool_decision"},
+                "attributes": [
+                    {"key": "event.name", "value": {"stringValue": "tool_decision"}},
+                    {"key": "tool_use_id", "value": {"stringValue": "tool-1"}},
+                    {"key": "tool_name", "value": {"stringValue": "Bash"}},
+                    {"key": "decision", "value": {"stringValue": "accept"}},
+                    {"key": "source", "value": {"stringValue": "user_temporary"}},
+                ],
+            }]}]}]
         }
         decisions = extract_tool_decisions([payload])
         self.assertEqual(decisions, [ToolDecision("tool-1", "Bash", "accept", "user_temporary")])

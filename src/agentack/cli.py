@@ -10,6 +10,7 @@ from typing import Any
 from . import __version__
 from .adapters.claude import ClaudeCodeAdapter, record_hook_event
 from .adapters.codex import CodexCLIAdapter
+from .coverage import render_coverage
 from .demo import SCENARIOS, demo_events
 from .engine import evaluate_events
 from .findings import RULES
@@ -190,6 +191,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def cmd_coverage(args: argparse.Namespace) -> int:
+    del args
+    print(render_coverage())
+    return EXIT_PASS
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     adapters = {
         "claude": ClaudeCodeAdapter,
@@ -299,6 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="detect coding-agent integrations available on this machine")
     doctor.set_defaults(func=cmd_doctor)
+
+    coverage = subparsers.add_parser("coverage", help="show truthful ACK rule coverage across traces and live adapters")
+    coverage.set_defaults(func=cmd_coverage)
 
     live_test = subparsers.add_parser("test", help="run a live approval-integrity test against a supported agent")
     live_test.add_argument("agent", choices=("claude", "codex"))

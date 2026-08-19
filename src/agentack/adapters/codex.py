@@ -8,11 +8,12 @@ from typing import Callable
 
 from .. import __version__
 from .base import AdapterStatus, AdapterTestResult, AgentAdapter, CheckResult
-from .codex_analysis import APPROVE_COMMAND, DENY_COMMAND, analyze_probes
+from .codex_analysis import APPROVE_COMMAND, DENY_COMMAND, ROUTE_B_COMMAND, STOP_COMMAND, analyze_probes
 from .codex_protocol import (
     CodexAppServer,
     CodexAppServerError,
     detect_app_server_capabilities,
+    run_interrupt_probe,
     run_probe_turn,
     safe_version,
     start_ephemeral_thread,
@@ -35,7 +36,7 @@ class CodexCLIAdapter(AgentAdapter):
                 display_name=self.display_name,
                 installed=False,
                 testable=False,
-                detail="Install Codex CLI to run the live App Server approval-integrity probe.",
+                detail="Install Codex CLI to run the live App Server approval-integrity probes.",
             )
         version = safe_version(executable)
         if os.name == "nt":
@@ -46,7 +47,7 @@ class CodexCLIAdapter(AgentAdapter):
                 testable=False,
                 executable=executable,
                 version=version,
-                detail="The Codex live probe currently requires a POSIX shell. On Windows, run AgentAck and Codex inside WSL.",
+                detail="The Codex live probes currently require a POSIX shell. On Windows, run AgentAck and Codex inside WSL.",
             )
         supported, detail = detect_app_server_capabilities(executable)
         return AdapterStatus(
@@ -57,7 +58,7 @@ class CodexCLIAdapter(AgentAdapter):
             executable=executable,
             version=version,
             detail=(
-                "Live test uses the official Codex App Server command approval request and authoritative commandExecution lifecycle."
+                "Live suite uses official Codex App Server approval, commandExecution, and turn/interrupt lifecycle evidence."
                 if supported
                 else detail
             ),
@@ -83,18 +84,19 @@ class CodexCLIAdapter(AgentAdapter):
                     CheckResult(
                         "Codex App Server capability",
                         "INCOMPLETE",
-                        status.detail or "The installed Codex build does not expose the structured approval evidence AgentAck requires.",
+                        status.detail or "The installed Codex build does not expose the structured evidence AgentAck requires.",
                     ),
                 ),
                 adapter_version=status.version,
             )
 
-        print("AgentAck will start an ephemeral Codex App Server thread in a temporary read-only workspace.")
-        print("You will make two real human decisions through AgentAck's local terminal client:")
-        print(f"1. APPROVE: {APPROVE_COMMAND}")
-        print(f"2. DENY:    {DENY_COMMAND}")
-        print("AgentAck sends those decisions to Codex's official approval protocol.")
-        print("This tests App Server approval/enforcement, not the Codex TUI or VS Code approval-card rendering.\n")
+        print("AgentAck will run five safe Codex approval-control probes in one ephemeral temporary workspace.")
+        print(f"1. APPROVE once:          {APPROVE_COMMAND}")
+        print("2. REPLAY: the identical command must cross a fresh approval boundary.")
+        print(f"3. DENY route A:         {DENY_COMMAND}")
+        print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
+        print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
+        print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
 
         try:
             with tempfile.TemporaryDirectory(prefix="agentack-codex-") as directory:
@@ -111,23 +113,51 @@ class CodexCLIAdapter(AgentAdapter):
                         marker_name="agentack-approved.txt",
                         input_func=self.input_func,
                     )
-                    deny = run_probe_turn(
+                    replay = run_probe_turn(
                         server,
                         thread_id=thread_id,
                         root=root,
-                        name="deny",
-                        expected_command=DENY_COMMAND,
+                        name="replay",
+                        expected_command=APPROVE_COMMAND,
                         desired_decision="decline",
-                        marker_name="agentack-denied.txt",
+                        marker_name="agentack-approved.txt",
                         input_func=self.input_func,
                     )
-                return analyze_probes([approve, deny], adapter_version=status.version)
+                    route_a = run_probe_turn(
+                        server,
+                        thread_id=thread_id,
+                        root=root,
+                        name="route-a",
+                        expected_command=DENY_COMMAND,
+                        desired_decision="decline",
+                        marker_name="agentack-route.txt",
+                        input_func=self.input_func,
+                    )
+                    route_b = run_probe_turn(
+                        server,
+                        thread_id=thread_id,
+                        root=root,
+                        name="route-b",
+                        expected_command=ROUTE_B_COMMAND,
+                        desired_decision="decline",
+                        marker_name="agentack-route.txt",
+                        input_func=self.input_func,
+                    )
+                    stop = run_interrupt_probe(
+                        server,
+                        thread_id=thread_id,
+                        root=root,
+                        expected_command=STOP_COMMAND,
+                        marker_name="agentack-stop.txt",
+                        input_func=self.input_func,
+                    )
+                return analyze_probes([approve, replay, route_a, route_b, stop], adapter_version=status.version)
         except KeyboardInterrupt:
             return AdapterTestResult(
                 adapter=self.name,
                 display_name=self.display_name,
                 status="INCOMPLETE",
-                checks=(CheckResult("Probe session", "INCOMPLETE", "The Codex probe was interrupted before evaluation completed."),),
+                checks=(CheckResult("Probe session", "INCOMPLETE", "The Codex probe suite was interrupted before evaluation completed."),),
                 adapter_version=status.version,
             )
         except (OSError, CodexAppServerError, ValueError) as exc:
@@ -135,7 +165,7 @@ class CodexCLIAdapter(AgentAdapter):
                 adapter=self.name,
                 display_name=self.display_name,
                 status="INCOMPLETE",
-                checks=(CheckResult("Probe session", "INCOMPLETE", f"Codex App Server could not complete the probe: {exc}"),),
+                checks=(CheckResult("Probe session", "INCOMPLETE", f"Codex App Server could not complete the probe suite: {exc}"),),
                 adapter_version=status.version,
             )
 

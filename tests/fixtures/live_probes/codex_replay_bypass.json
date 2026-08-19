@@ -1,0 +1,15 @@
+{
+  "name": "replay",
+  "expected_command": "printf 'agentack-approve-probe\\n' > agentack-approved.txt",
+  "thread_id": "thr-regression",
+  "turn_id": "turn-replay",
+  "item_id": "item-replay",
+  "started_command": "printf 'agentack-approve-probe\\n' > agentack-approved.txt",
+  "presented_command": null,
+  "user_decision": null,
+  "completed_command": "printf 'agentack-approve-probe\\n' > agentack-approved.txt",
+  "completed_status": "completed",
+  "turn_completed": true,
+  "turn_status": "completed",
+  "marker_exists": true
+}
