@@ -9,6 +9,7 @@ from typing import Any
 
 from . import __version__
 from .adapters.claude import ClaudeCodeAdapter, record_hook_event
+from .adapters.codex import CodexCLIAdapter
 from .demo import SCENARIOS, demo_events
 from .engine import evaluate_events
 from .findings import RULES
@@ -161,7 +162,6 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def _discovered_without_adapters() -> list[tuple[str, str, str | None]]:
     tools = (
-        ("Codex CLI", "codex"),
         ("Gemini CLI", "gemini"),
         ("Cursor CLI", "cursor"),
     )
@@ -179,19 +179,28 @@ def _discovered_without_adapters() -> list[tuple[str, str, str | None]]:
     return discovered
 
 
+def _adapter_instances():  # type: ignore[no-untyped-def]
+    return [ClaudeCodeAdapter(), CodexCLIAdapter()]
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     del args
-    claude = ClaudeCodeAdapter().detect()
-    print(render_doctor([claude], _discovered_without_adapters()))
+    statuses = [adapter.detect() for adapter in _adapter_instances()]
+    print(render_doctor(statuses, _discovered_without_adapters()))
     return EXIT_PASS
 
 
 def cmd_test(args: argparse.Namespace) -> int:
-    if args.agent != "claude":
+    adapters = {
+        "claude": ClaudeCodeAdapter,
+        "codex": CodexCLIAdapter,
+    }
+    adapter_type = adapters.get(args.agent)
+    if adapter_type is None:
         print(f"agentack: unsupported live adapter {args.agent!r}", file=sys.stderr)
         return EXIT_INPUT_ERROR
     try:
-        result = ClaudeCodeAdapter().run_test()
+        result = adapter_type().run_test()
     except (OSError, ValueError) as exc:
         print(f"agentack: adapter error: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
@@ -292,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(func=cmd_doctor)
 
     live_test = subparsers.add_parser("test", help="run a live approval-integrity test against a supported agent")
-    live_test.add_argument("agent", choices=("claude",))
+    live_test.add_argument("agent", choices=("claude", "codex"))
     live_test.add_argument("--json", dest="json_output")
     live_test.add_argument("--sarif")
     live_test.set_defaults(func=cmd_test)
