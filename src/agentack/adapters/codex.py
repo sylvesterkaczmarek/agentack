@@ -31,6 +31,19 @@ _CODEX_NOISE_ENV_VARS = (
 
 
 @contextmanager
+def _temporary_codex_home(codex_home: Path) -> Iterator[None]:
+    previous = os.environ.get("CODEX_HOME")
+    os.environ["CODEX_HOME"] = str(codex_home)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = previous
+
+
+@contextmanager
 def _temporary_codex_environment(codex_home: Path, exec_server_url: str) -> Iterator[None]:
     """Give only the child Codex process an isolated home and default exec server.
 
