@@ -4,9 +4,9 @@ AgentAck separates its deterministic trace checker from optional live agent adap
 
 ## Deterministic core
 
-`agentack check`, individual synthetic scenarios, policy parsing and report generation are designed to inspect evidence without executing the actions represented by that evidence.
+`agentack check`, synthetic scenarios, policy parsing, and report generation inspect evidence without executing the actions represented by that evidence.
 
-Default properties of the deterministic core:
+Default properties:
 
 - no network access;
 - no shell execution from trace content;
@@ -20,33 +20,55 @@ Default properties of the deterministic core:
 - deterministic action identity;
 - explicit tool/operation aliasing without fuzzy matching.
 
-`agentack demo` evaluates synthetic in-memory actions. The synthetic actions are descriptions only and are not executed.
+`agentack demo` evaluates synthetic in-memory actions. Those action descriptions are not executed.
 
 ## Live adapters
 
 A live adapter runs only when the user explicitly invokes `agentack test <agent>`.
 
-The Claude Code adapter launches the installed `claude` executable in a temporary directory with a temporary settings file. The probe restricts available built-in tools to `Bash`, forces Bash through an `ask` permission rule, and asks Claude to attempt two harmless `echo` commands so the user can approve one and deny the other. Claude Code may use its normal network connection to the model provider as part of that interactive session.
+### Claude Code
 
-AgentAck's command hooks only record sanitized event metadata. They do not return an allow/deny decision. Recorder errors deliberately avoid hook exit code `2`, because Claude Code reserves that code for blocking tool actions.
+The Claude adapter launches the installed `claude` executable in a disposable directory with temporary settings. It restricts the session to Bash, forces Bash through an `ask` rule, and asks Claude to attempt four exact harmless commands covering one-time approval, replay, denial, and denial route-around.
 
-The live adapter also starts a loopback-only OTLP/HTTP JSON receiver and points the child Claude Code process at it. AgentAck uses the documented `tool_decision` event to correlate the native accept/reject decision by `tool_use_id`. Telemetry payloads remain in memory and are discarded when the test exits.
+AgentAck command hooks only record sanitized event metadata. They do not return allow/deny decisions. Recorder errors deliberately avoid hook exit code `2`, which Claude reserves for blocking actions.
+
+A loopback-only OTLP/HTTP JSON receiver captures documented `tool_decision` events. Payloads remain in memory and are discarded when the test exits. AgentAck does not enable optional detailed tool telemetry.
+
+Claude's documented `Stop` hook is not treated as a user-interrupt signal, so live `ACK008` is `SKIP` rather than an invented PASS.
 
 See [`claude-code.md`](claude-code.md).
 
+### Codex CLI
+
+The Codex adapter launches `codex app-server --stdio` locally, starts an ephemeral read-only thread in a disposable workspace, and uses the structured App Server approval/command lifecycle. It automatically declines unexpected command requests.
+
+The initial approval uses the one-request `accept` decision. AgentAck never intentionally sends `acceptForSession` or creates a persistent approval rule.
+
+Replay and denial-route probes use only synthetic marker writes inside the temporary workspace. The stop probe waits for a pending approval request, asks the human to confirm interruption, sends the official `turn/interrupt` request, and requires the final turn to be interrupted without the marker being created.
+
+AgentAck does not parse human-readable Codex terminal output or persist App Server command output in reports.
+
+See [`codex-cli.md`](codex-cli.md).
+
 ## Trust boundary
 
-The checker trusts its own process and policy file for evaluation. It does not automatically trust the event producer.
+The checker trusts its own process and policy file for evaluation. It does not automatically trust the event producer or installed agent binary.
 
-An attacker controlling both the agent and the trace emitter could omit or fabricate proposals, human presentations, decisions or executions. Stronger deployments should place event capture at an independent action gateway, hook boundary, policy engine or execution mediator that the agent cannot rewrite.
+An attacker controlling both the agent and the evidence emitter could omit or fabricate proposals, human presentations, decisions, or executions. Stronger deployments should place capture at an independent action gateway, hook boundary, policy engine, or execution mediator that the agent cannot rewrite.
 
 ## Human presentation evidence
 
-AgentAck distinguishes the proposed action from the action recorded as presented to a human. It can detect inconsistencies between proposal, presentation and execution.
+AgentAck distinguishes the proposed action from the action recorded as presented to a human and can detect inconsistencies between proposal, presentation, and execution.
 
-It cannot prove that the human actually saw, understood or approved the recorded presentation unless the integration that emits the evidence provides a trustworthy boundary for that claim.
+It cannot prove that a human actually saw or understood a presentation unless the integration exposes a trustworthy boundary for that claim.
 
-For Claude Code specifically, hooks provide the exact pre-execution and post-execution tool data while the documented OpenTelemetry `tool_decision` event provides the correlated accept/reject decision and source. AgentAck does not infer a human decision when that telemetry signal is absent.
+For Claude Code, hooks provide structured action data while documented OpenTelemetry decision events provide the correlated decision/source. For Codex, App Server provides the structured command item and approval request; the human decision is collected by AgentAck's local terminal client and returned to App Server.
+
+## Approval scope
+
+A replay finding requires evidence that authority was reused outside the scope actually granted.
+
+The Claude adapter does not label an explicit persistent user approval as a replay vulnerability. The Codex adapter sends only a one-request `accept`, making the replay scope explicit.
 
 ## Action hashing
 
@@ -54,32 +76,32 @@ SHA-256 action identity detects differences between structured action representa
 
 ## Incomplete evidence
 
-Missing lifecycle evidence is not converted into a successful result. AgentAck returns `INCOMPLETE` when the available trace cannot establish approval integrity and no stronger security failure is demonstrated.
+Missing lifecycle evidence is never converted into success. AgentAck returns `INCOMPLETE` when the available evidence cannot establish approval integrity and no stronger security failure is demonstrated.
 
-Live adapters use the same principle. If a permission prompt is observed but the documented hook surface cannot establish what happened next, AgentAck reports `INCOMPLETE` rather than guessing.
+This applies to missing permission events, lost telemetry correlation, missing command completion, missing session/turn completion, malformed protocol messages, or unsupported live boundaries.
 
 ## Sensitive data
 
-Integrations should avoid placing secrets, complete environment variables, access tokens or unnecessary command output into traces. Prefer structured security-relevant metadata and redacted resource identifiers.
+Integrations should avoid secrets, complete environment variables, access tokens, and unnecessary command output. Prefer structured security-relevant metadata and redacted resource identifiers.
 
-The built-in Claude probe stores only sanitized metadata for its synthetic command and deletes the temporary capture when the test process exits.
-
-## Reporting vulnerabilities
-
-Use GitHub Security Advisories for security reports. Do not publish exploit details in an issue before a fix is available.
+Built-in live probes use only synthetic values and disposable workspaces.
 
 ## Report provenance and privacy
 
-JSON and SARIF reports contain hashes and structured identifiers needed to correlate approval evidence. They intentionally omit raw action parameters and raw live-adapter telemetry payloads.
+JSON and SARIF reports contain hashes and structured identifiers needed to correlate approval evidence. They intentionally omit raw action parameters and raw live-adapter telemetry/protocol payloads.
 
-A trace SHA-256 identifies the exact input bytes. A policy SHA-256 identifies canonical policy semantics. Neither is a signature, authenticity proof, trusted timestamp, or hardware/software attestation.
+A trace SHA-256 identifies exact input bytes. A policy/evidence SHA-256 identifies canonical semantics or sanitized evidence. These values are not signatures, authenticity proofs, trusted timestamps, or attestations.
 
-Reports can contain user-selected session/action/approval identifiers. They should be handled as security evidence even though raw command parameters are excluded.
+Reports can contain user-selected session/action/approval identifiers and should be handled as security evidence.
 
 See [`report-schema.md`](report-schema.md).
 
 ## Loopback telemetry receiver
 
-The Claude Code live adapter binds its OTLP receiver to `127.0.0.1` on an ephemeral port and uses an unpredictable per-run URL path. Requests to other paths are rejected. Request size and accepted payload count are bounded.
+The Claude adapter binds its OTLP receiver to `127.0.0.1` on an ephemeral port and uses an unpredictable per-run URL path. Requests to other paths are rejected, and request size/payload count are bounded.
 
-The random path reduces accidental or opportunistic local injection but is not an authentication boundary against another process with sufficient visibility into the child process environment or local traffic. Missing or inconsistent telemetry therefore produces `INCOMPLETE` or `FAIL` according to the observed evidence rather than being silently trusted.
+The random path reduces accidental local injection but is not an authentication boundary against a process with sufficient local visibility. Missing or inconsistent telemetry therefore produces `INCOMPLETE` or `FAIL` rather than being silently trusted.
+
+## Reporting vulnerabilities
+
+Use GitHub Security Advisories for security reports. Do not publish exploit details in an issue before a fix is available.

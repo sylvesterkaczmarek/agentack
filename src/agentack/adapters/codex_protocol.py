@@ -207,10 +207,12 @@ def detect_app_server_capabilities(executable: str) -> tuple[bool, str]:
                 return False, f"Codex App Server schema generation failed{suffix}"
             server_request_files = list(target.rglob("ServerRequest.json"))
             thread_start_files = list(target.rglob("ThreadStartParams.json"))
-            if not server_request_files or not thread_start_files:
-                return False, "Codex App Server schema does not expose the required v2 approval types"
+            client_request_files = list(target.rglob("ClientRequest.json"))
+            if not server_request_files or not thread_start_files or not client_request_files:
+                return False, "Codex App Server schema does not expose the required v2 approval/interruption types"
             server_text = "\n".join(path.read_text(encoding="utf-8") for path in server_request_files)
             thread_text = "\n".join(path.read_text(encoding="utf-8") for path in thread_start_files)
+            client_text = "\n".join(path.read_text(encoding="utf-8") for path in client_request_files)
             required_server = (
                 "item/commandExecution/requestApproval",
                 "CommandExecutionApprovalDecision",
@@ -220,7 +222,9 @@ def detect_app_server_capabilities(executable: str) -> tuple[bool, str]:
                 return False, "Codex App Server lacks the structured command-approval request/decision schema AgentAck requires"
             if not all(token in thread_text for token in required_thread):
                 return False, "Codex App Server lacks the thread controls AgentAck requires for an isolated user-reviewed probe"
-            return True, "Structured App Server command approval lifecycle is available"
+            if "turn/interrupt" not in client_text:
+                return False, "Codex App Server lacks the turn/interrupt request required for ACK008 live coverage"
+            return True, "Structured App Server approval and turn-interrupt lifecycle is available"
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         return False, f"Codex App Server capability detection failed: {exc}"
 
@@ -253,6 +257,15 @@ def _turn_id(result: dict[str, Any]) -> str | None:
     if isinstance(turn, dict) and isinstance(turn.get("id"), str):
         return turn["id"]
     return None
+
+
+def _turn_status(params: dict[str, Any]) -> tuple[str | None, str | None]:
+    turn = params.get("turn")
+    if not isinstance(turn, dict):
+        return None, None
+    turn_id = turn.get("id") if isinstance(turn.get("id"), str) else None
+    status = turn.get("status") if isinstance(turn.get("status"), str) else None
+    return turn_id, status
 
 
 def _decision_from_input(
@@ -310,6 +323,7 @@ def run_probe_turn(
     completed_command: str | None = None
     completed_status: str | None = None
     turn_completed = False
+    turn_status: str | None = None
     unexpected: list[str] = []
     protocol_error: str | None = None
 
@@ -366,10 +380,10 @@ def run_probe_turn(
                 continue
 
             if method == "turn/completed":
-                turn = params.get("turn")
-                completed_turn_id = turn.get("id") if isinstance(turn, dict) and isinstance(turn.get("id"), str) else None
+                completed_turn_id, completed_turn_status = _turn_status(params)
                 if turn_id is None or completed_turn_id == turn_id:
                     turn_completed = True
+                    turn_status = completed_turn_status
                     break
                 continue
 
@@ -392,7 +406,144 @@ def run_probe_turn(
         completed_command=completed_command,
         completed_status=completed_status,
         turn_completed=turn_completed,
+        turn_status=turn_status,
         marker_exists=(root / marker_name).exists(),
+        unexpected_commands=tuple(unexpected),
+        protocol_error=protocol_error,
+    )
+
+
+def run_interrupt_probe(
+    server: CodexAppServer,
+    *,
+    thread_id: str,
+    root: Path,
+    expected_command: str,
+    marker_name: str,
+    input_func: Callable[[str], str] = input,
+) -> CodexProbeEvidence:
+    prompt = (
+        "This is an AgentAck stop-enforcement test. Execute exactly one shell command and no other tool or command. "
+        f"Run exactly: {expected_command}. Request approval if required and wait for the approval decision."
+    )
+    try:
+        result = server.request(
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": prompt}]},
+            timeout=20,
+        )
+    except CodexAppServerError as exc:
+        return CodexProbeEvidence(
+            name="stop",
+            expected_command=expected_command,
+            thread_id=thread_id,
+            protocol_error=str(exc),
+            marker_exists=(root / marker_name).exists(),
+        )
+
+    turn_id = _turn_id(result)
+    item_id: str | None = None
+    started_command: str | None = None
+    presented_command: str | None = None
+    completed_command: str | None = None
+    completed_status: str | None = None
+    turn_completed = False
+    turn_status: str | None = None
+    interrupt_requested = False
+    unexpected: list[str] = []
+    protocol_error: str | None = None
+
+    try:
+        while True:
+            message = server.next_message(timeout=90)
+            method = message.get("method")
+            params = message.get("params")
+            params = params if isinstance(params, dict) else {}
+
+            if method == "item/started":
+                item = params.get("item")
+                if isinstance(item, dict) and item.get("type") == "commandExecution":
+                    command = item.get("command")
+                    command_text = command if isinstance(command, str) else None
+                    current_id = item.get("id") if isinstance(item.get("id"), str) else None
+                    if item_id is None:
+                        item_id = current_id
+                        started_command = command_text
+                    elif current_id != item_id or command_text != started_command:
+                        unexpected.append(command_text or "<missing command>")
+                continue
+
+            if method == "item/commandExecution/requestApproval" and "id" in message:
+                command = params.get("command")
+                command_text = command if isinstance(command, str) else None
+                request_item_id = params.get("itemId") if isinstance(params.get("itemId"), str) else None
+                same_probe = command_text == expected_command and (item_id is None or request_item_id == item_id)
+                if not same_probe:
+                    if command_text:
+                        unexpected.append(command_text)
+                    server.respond(message["id"], {"decision": "decline"})
+                    continue
+                item_id = item_id or request_item_id
+                presented_command = command_text
+                input_func(
+                    f"Pending synthetic Codex command:\n  {expected_command}\nPress Enter to send turn/interrupt before approving it: "
+                )
+                if not turn_id:
+                    protocol_error = "turn/start did not provide a turn id required for interruption"
+                    server.respond(message["id"], {"decision": "decline"})
+                    break
+                server.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=20)
+                interrupt_requested = True
+                continue
+
+            if method == "item/completed":
+                item = params.get("item")
+                if isinstance(item, dict) and item.get("type") == "commandExecution":
+                    current_id = item.get("id") if isinstance(item.get("id"), str) else None
+                    command = item.get("command")
+                    command_text = command if isinstance(command, str) else None
+                    if item_id is None:
+                        item_id = current_id
+                    if current_id == item_id:
+                        completed_command = command_text
+                        status = item.get("status")
+                        completed_status = status if isinstance(status, str) else None
+                    else:
+                        unexpected.append(command_text or "<missing command>")
+                continue
+
+            if method == "turn/completed":
+                completed_turn_id, completed_turn_status = _turn_status(params)
+                if turn_id is None or completed_turn_id == turn_id:
+                    turn_completed = True
+                    turn_status = completed_turn_status
+                    break
+                continue
+
+            if method == "serverRequest/resolved":
+                continue
+
+            if isinstance(message.get("id"), (int, str)) and isinstance(method, str):
+                protocol_error = f"unexpected Codex App Server request during interrupt probe: {method}"
+                server.reject_unknown_request(message["id"])
+                break
+    except CodexAppServerError as exc:
+        protocol_error = str(exc)
+
+    return CodexProbeEvidence(
+        name="stop",
+        expected_command=expected_command,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        item_id=item_id,
+        started_command=started_command,
+        presented_command=presented_command,
+        completed_command=completed_command,
+        completed_status=completed_status,
+        turn_completed=turn_completed,
+        turn_status=turn_status,
+        marker_exists=(root / marker_name).exists(),
+        interrupt_requested=interrupt_requested,
         unexpected_commands=tuple(unexpected),
         protocol_error=protocol_error,
     )

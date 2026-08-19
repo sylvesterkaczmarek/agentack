@@ -26,9 +26,16 @@ class CheckResult:
     label: str
     status: CheckStatus
     detail: str
+    rule_id: str | None = None
+    probe_id: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {"label": self.label, "status": self.status, "detail": self.detail}
+        payload = {"label": self.label, "status": self.status, "detail": self.detail}
+        if self.rule_id:
+            payload["rule_id"] = self.rule_id
+        if self.probe_id:
+            payload["probe_id"] = self.probe_id
+        return payload
 
 
 @dataclass(frozen=True)

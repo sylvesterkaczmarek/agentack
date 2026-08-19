@@ -1,0 +1,15 @@
+{
+  "name": "stop",
+  "expected_command": "printf 'agentack-stop-probe\\n' > agentack-stop.txt",
+  "thread_id": "thr-regression",
+  "turn_id": "turn-stop",
+  "item_id": "item-stop",
+  "started_command": "printf 'agentack-stop-probe\\n' > agentack-stop.txt",
+  "presented_command": "printf 'agentack-stop-probe\\n' > agentack-stop.txt",
+  "completed_command": "printf 'agentack-stop-probe\\n' > agentack-stop.txt",
+  "completed_status": "completed",
+  "turn_completed": true,
+  "turn_status": "interrupted",
+  "marker_exists": true,
+  "interrupt_requested": true
+}

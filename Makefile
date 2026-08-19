@@ -6,6 +6,7 @@ test:
 smoke:
 	python -m agentack demo
 	python -m agentack doctor
+	python -m agentack coverage
 	python -m agentack demo secure
 	@python -m agentack demo action-swap >/dev/null 2>&1; test $$? -eq 1
 	@python -m agentack demo secure --write /tmp/agentack-secure.jsonl >/dev/null

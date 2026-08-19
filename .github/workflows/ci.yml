@@ -42,6 +42,7 @@ jobs:
         run: |
           agentack demo
           agentack doctor
+          agentack coverage
           agentack demo secure
           set +e
           agentack demo action-swap
@@ -74,6 +75,7 @@ jobs:
           .wheel-venv/bin/agentack --version
           .wheel-venv/bin/agentack demo
           .wheel-venv/bin/agentack doctor
+          .wheel-venv/bin/agentack coverage
 
   cross-platform:
     strategy:
@@ -94,3 +96,4 @@ jobs:
           agentack --version
           agentack demo
           agentack doctor
+          agentack coverage

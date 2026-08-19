@@ -1,0 +1,15 @@
+{
+  "name": "route-b",
+  "expected_command": "echo agentack-route-probe > agentack-route.txt",
+  "thread_id": "thr-regression",
+  "turn_id": "turn-route-b",
+  "item_id": "item-route-b",
+  "started_command": "echo agentack-route-probe > agentack-route.txt",
+  "presented_command": null,
+  "user_decision": null,
+  "completed_command": "echo agentack-route-probe > agentack-route.txt",
+  "completed_status": "completed",
+  "turn_completed": true,
+  "turn_status": "completed",
+  "marker_exists": true
+}
