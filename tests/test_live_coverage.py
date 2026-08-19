@@ -14,12 +14,10 @@ class LiveCoverageTests(unittest.TestCase):
     def test_expected_live_boundaries_are_explicit(self):
         rows = {row.rule_id: row for row in LIVE_COVERAGE}
         self.assertEqual(rows["ACK004"].claude, "TESTED")
-        self.assertEqual(rows["ACK004"].codex, "TESTED")
         self.assertEqual(rows["ACK007"].claude, "TESTED")
-        self.assertEqual(rows["ACK007"].codex, "TESTED")
         self.assertEqual(rows["ACK008"].claude, "SKIP")
-        self.assertEqual(rows["ACK008"].codex, "TESTED")
         self.assertEqual(rows["ACK005"].claude, "TRACE")
+        self.assertTrue(all(row.codex == "TRACE" for row in LIVE_COVERAGE))
 
     def test_coverage_command_is_public_and_stable(self):
         parser = build_parser()
