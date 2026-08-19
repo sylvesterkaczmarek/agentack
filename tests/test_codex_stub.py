@@ -19,10 +19,10 @@ def post_json(url, payload):
         return response.status, response.read().decode("utf-8")
 
 
-def request_payload(*, inputs=None):
+def request_payload(*, inputs=None, tool="shell_command"):
     return {
         "model": "gpt-5.5",
-        "tools": [{"type": "function", "name": "shell_command"}],
+        "tools": [{"type": "function", "name": tool}],
         "input": [] if inputs is None else inputs,
     }
 
@@ -49,7 +49,7 @@ class CodexStubTests(unittest.TestCase):
             status, completion = post_json(
                 provider.base_url + "/responses",
                 request_payload(
-                    inputs=[{"type": "function_call_output", "call_id": "agentack-shell-1", "output": "ok"}]
+                    inputs=[{"type": "function_call_output", "call_id": "agentack-exec-1", "output": "ok"}]
                 ),
             )
             self.assertEqual(status, 200)
@@ -66,7 +66,17 @@ class CodexStubTests(unittest.TestCase):
             self.assertIn("model=gpt-5.5", provider.diagnostic)
             self.assertIn("shell_command", provider.diagnostic)
 
-    def test_provider_fails_closed_if_shell_tool_is_not_advertised(self):
+    def test_provider_uses_advertised_exec_command_shape(self):
+        command = "printf exec > marker"
+        with DeterministicCodexProvider((command,)) as provider:
+            status, response = post_json(provider.base_url + "/responses", request_payload(tool="exec_command"))
+            self.assertEqual(status, 200)
+            call = event_payload(response, "response.output_item.done")["item"]
+            self.assertEqual(call["name"], "exec_command")
+            self.assertEqual(json.loads(call["arguments"]), {"cmd": command, "yield_time_ms": 500})
+            self.assertIn("execution_tool=exec_command", provider.diagnostic)
+
+    def test_provider_fails_closed_if_execution_tool_is_not_advertised(self):
         with DeterministicCodexProvider(("echo one",)) as provider:
             payload = {"model": "gpt-5.5", "tools": [{"type": "function", "name": "other_tool"}], "input": []}
             with self.assertRaises(urllib.error.HTTPError) as raised:
@@ -94,7 +104,7 @@ class CodexStubTests(unittest.TestCase):
         self.assertIn('wire_api = "responses"', config)
         self.assertIn("requires_openai_auth = false", config)
         self.assertIn('approval_policy = "untrusted"', config)
-        self.assertIn('sandbox_mode = "workspace-write"', config)
+        self.assertIn('sandbox_mode = "read-only"', config)
         self.assertNotIn("api_key", config.lower())
         self.assertNotIn("token", config.lower())
 
