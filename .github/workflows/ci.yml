@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install development checks
         run: python -m pip install -e '.[dev]'
       - name: Lint
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -51,9 +51,13 @@ jobs:
           head -n -1 /tmp/agentack-secure.jsonl > /tmp/agentack-incomplete.jsonl
           agentack check /tmp/agentack-incomplete.jsonl
           incomplete_code=$?
+          agentack test codex >/tmp/agentack-codex-status.txt
+          codex_code=$?
           set -e
           test "$fail_code" -eq 1
           test "$incomplete_code" -eq 3
+          test "$codex_code" -eq 3
+          grep -q "Codex live approval boundary" /tmp/agentack-codex-status.txt
 
   package:
     runs-on: ubuntu-latest
@@ -61,7 +65,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install build tools
         run: python -m pip install 'build>=1.2,<2' 'twine>=6,<7'
       - name: Build distributions
@@ -76,6 +80,12 @@ jobs:
           .wheel-venv/bin/agentack demo
           .wheel-venv/bin/agentack doctor
           .wheel-venv/bin/agentack coverage
+          set +e
+          .wheel-venv/bin/agentack test codex >/tmp/agentack-wheel-codex.txt
+          codex_code=$?
+          set -e
+          test "$codex_code" -eq 3
+          grep -q "Codex live approval boundary" /tmp/agentack-wheel-codex.txt
 
   cross-platform:
     strategy:
@@ -86,7 +96,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install
         run: python -m pip install .
       - name: Tests
