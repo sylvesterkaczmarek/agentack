@@ -8,7 +8,6 @@ from typing import Any, Sequence
 
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 PROBE_MODEL = "gpt-5.5"
-SHELL_TOOL = "shell_command"
 
 
 def _usage() -> dict[str, Any]:
@@ -30,11 +29,29 @@ def _sse(events: Sequence[dict[str, Any]]) -> bytes:
     return "".join(chunks).encode("utf-8")
 
 
-def _function_call_events(index: int, command: str) -> bytes:
+def _execution_tool(tools: tuple[str, ...]) -> str | None:
+    # Codex model profiles can expose the legacy shell_command function or the
+    # unified exec_command function. Both enter Codex's command-execution and
+    # approval lifecycle; never invent a tool that the installed binary did not advertise.
+    if "shell_command" in tools:
+        return "shell_command"
+    if "exec_command" in tools:
+        return "exec_command"
+    return None
+
+
+def _execution_arguments(tool: str, command: str) -> dict[str, Any]:
+    if tool == "shell_command":
+        return {"command": command, "timeout_ms": 30_000}
+    if tool == "exec_command":
+        return {"cmd": command, "yield_time_ms": 1_000}
+    raise ValueError(f"unsupported deterministic Codex execution tool: {tool}")
+
+
+def _function_call_events(index: int, command: str, tool: str) -> bytes:
     response_id = f"agentack-response-{index}"
-    call_id = f"agentack-shell-{index}"
-    # Codex 0.148 approval tests emit shell_command with command + timeout_ms.
-    arguments = json.dumps({"command": command, "timeout_ms": 30_000}, separators=(",", ":"))
+    call_id = f"agentack-exec-{index}"
+    arguments = json.dumps(_execution_arguments(tool, command), separators=(",", ":"))
     return _sse(
         [
             {"type": "response.created", "response": {"id": response_id}},
@@ -43,7 +60,7 @@ def _function_call_events(index: int, command: str) -> bytes:
                 "item": {
                     "type": "function_call",
                     "call_id": call_id,
-                    "name": SHELL_TOOL,
+                    "name": tool,
                     "arguments": arguments,
                 },
             },
@@ -103,7 +120,7 @@ def _advertised_tool_names(payload: Any) -> tuple[str, ...]:
 
 
 class DeterministicCodexProvider:
-    """Loopback-only Responses API stub that deterministically requests safe shell calls.
+    """Loopback-only Responses API stub that deterministically requests safe command calls.
 
     The stub chooses only the synthetic action. The installed Codex binary still
     constructs the command item, requests approval, enforces the decision, and
@@ -118,6 +135,7 @@ class DeterministicCodexProvider:
         self._error: str | None = None
         self._observed_model: str | None = None
         self._observed_tools: tuple[str, ...] = ()
+        self._execution_tool: str | None = None
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -143,7 +161,8 @@ class DeterministicCodexProvider:
         with self._lock:
             model = self._observed_model or "<missing>"
             tools = ", ".join(self._observed_tools) if self._observed_tools else "<none>"
-            return f"model={model}; advertised_tools={tools}"
+            execution_tool = self._execution_tool or "<none>"
+            return f"model={model}; execution_tool={execution_tool}; advertised_tools={tools}"
 
     def _record_error(self, detail: str) -> None:
         with self._lock:
@@ -160,12 +179,14 @@ class DeterministicCodexProvider:
         tools = _advertised_tool_names(payload)
         model = payload.get("model") if isinstance(payload, dict) else None
         model_text = model if isinstance(model, str) else None
+        execution_tool = _execution_tool(tools)
         with self._lock:
             self._observed_model = model_text
             self._observed_tools = tools
-            if SHELL_TOOL not in tools:
+            self._execution_tool = execution_tool
+            if execution_tool is None:
                 self._error = (
-                    f"installed Codex did not advertise {SHELL_TOOL!r} to the deterministic provider; "
+                    "installed Codex did not advertise a supported command execution tool to the deterministic provider; "
                     f"model={model_text or '<missing>'}; tools={', '.join(tools) if tools else '<none>'}"
                 )
                 body = json.dumps({"error": {"message": self._error}}).encode("utf-8")
@@ -177,7 +198,7 @@ class DeterministicCodexProvider:
             self._next_command += 1
             index = self._next_command
             command = self._commands[index - 1]
-        return 200, _function_call_events(index, command), "text/event-stream"
+        return 200, _function_call_events(index, command, execution_tool), "text/event-stream"
 
     def __enter__(self) -> "DeterministicCodexProvider":
         provider = self
