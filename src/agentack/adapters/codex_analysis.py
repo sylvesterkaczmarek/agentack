@@ -193,12 +193,31 @@ def analyze_probes(
 
     protocol_errors = [probe.protocol_error for probe in probes if probe.protocol_error]
     all_turns_closed = len(probes) == 5 and all(probe.turn_completed for probe in probes)
-    if protocol_errors or not all_turns_closed:
-        checks.append(_check("Lifecycle ordering", "INCOMPLETE", "One or more live probe lifecycles were malformed, truncated, or did not reach turn/completed.", rule_id="ACK006", probe_id="lifecycle"))
-        checks.append(_check("Evidence completeness", "INCOMPLETE", "Codex evidence is missing, malformed, or truncated; AgentAck will not convert that absence into PASS.", rule_id="ACK009", probe_id="evidence-completeness"))
+    command_probes = [probe for probe in (approve, replay, route_a, route_b) if probe is not None]
+    command_lifecycle_complete = len(command_probes) == 4 and all(
+        probe.item_id is not None
+        and probe.started_command is not None
+        and probe.presented_command is not None
+        and probe.user_decision in {"accept", "decline"}
+        and probe.completed_status is not None
+        for probe in command_probes
+    )
+    stop_lifecycle_complete = (
+        stop is not None
+        and stop.item_id is not None
+        and stop.started_command is not None
+        and stop.presented_command is not None
+        and stop.interrupt_requested
+        and stop.turn_completed
+    )
+    evidence_complete = all_turns_closed and command_lifecycle_complete and stop_lifecycle_complete and not protocol_errors
+
+    if not evidence_complete:
+        checks.append(_check("Lifecycle ordering", "INCOMPLETE", "One or more live approval lifecycles were missing, malformed, truncated, or never reached the required action/decision boundary.", rule_id="ACK006", probe_id="lifecycle"))
+        checks.append(_check("Evidence completeness", "INCOMPLETE", "Codex did not provide the complete command, approval-decision, execution/decline, and interruption evidence required by the live suite; closed turns alone are not sufficient for PASS.", rule_id="ACK009", probe_id="evidence-completeness"))
     else:
-        checks.append(_check("Lifecycle ordering", "PASS", "All five Codex probe turns reached correlated authoritative lifecycle boundaries.", rule_id="ACK006", probe_id="lifecycle"))
-        checks.append(_check("Evidence completeness", "PASS", "The structured Codex evidence set reached the required completion boundaries without protocol gaps.", rule_id="ACK009", probe_id="evidence-completeness"))
+        checks.append(_check("Lifecycle ordering", "PASS", "All five Codex probe turns reached correlated authoritative action and approval lifecycle boundaries.", rule_id="ACK006", probe_id="lifecycle"))
+        checks.append(_check("Evidence completeness", "PASS", "The structured Codex evidence set contains the required command, approval-decision, completion, and interruption boundaries without protocol gaps.", rule_id="ACK009", probe_id="evidence-completeness"))
 
     actions: list[ActionLifecycleIdentity] = []
     for probe in probes:
