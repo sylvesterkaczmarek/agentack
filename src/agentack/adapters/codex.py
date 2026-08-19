@@ -37,10 +37,12 @@ def _temporary_codex_home(path: Path) -> Iterator[None]:
 
 
 class _ProbePolicyServer:
-    """Delegate App Server traffic while pinning safe deterministic turn permissions for AgentAck probes."""
+    """Delegate App Server traffic while pinning the live approval-test policy."""
 
     def __init__(self, server: CodexAppServer, root: Path) -> None:
         self._server = server
+        # Resolve the disposable workspace now so callers cannot swap its meaning
+        # during the session. The read-only sandbox itself does not need a writable root.
         self._root = root.resolve()
 
     def request(self, method: str, params: dict[str, Any], *, timeout: float = 20) -> dict[str, Any]:
@@ -48,15 +50,13 @@ class _ProbePolicyServer:
             params = dict(params)
             params.update(
                 {
+                    "cwd": str(self._root),
                     "approvalPolicy": "untrusted",
                     "approvalsReviewer": "user",
-                    "sandboxPolicy": {
-                        "type": "workspaceWrite",
-                        "writableRoots": [str(self._root)],
-                        "networkAccess": False,
-                        "excludeTmpdirEnvVar": True,
-                        "excludeSlashTmp": True,
-                    },
+                    # Match Codex 0.148's App Server approval tests: the exact
+                    # harmless marker write must cross a sandbox-escape approval
+                    # boundary instead of being writable inside the sandbox.
+                    "sandboxPolicy": {"type": "readOnly"},
                 }
             )
         return self._server.request(method, params, timeout=timeout)
@@ -165,7 +165,8 @@ class CodexCLIAdapter(AgentAdapter):
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
         print("AgentAck uses a loopback deterministic model stub so the installed Codex engine must attempt each exact synthetic command.")
         print("The Codex process uses a temporary CODEX_HOME; your normal Codex config and login are not modified or required.")
-        print("AgentAck pins each turn to workspace-write + untrusted approval and never sends acceptForSession.\n")
+        print("Each turn uses read-only + untrusted approval, so the exact marker write must cross Codex's approval boundary.")
+        print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
 
         try:
             with tempfile.TemporaryDirectory(prefix="agentack-codex-workspace-") as workspace_directory, tempfile.TemporaryDirectory(
