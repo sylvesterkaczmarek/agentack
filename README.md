@@ -239,6 +239,21 @@ make check
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
 
+## Cite this repository
+
+If you use or adapt this repository, please cite:
+
+> Kaczmarek, S. (2026). *AgentAck*. GitHub. https://github.com/sylvesterkaczmarek/agentack
+
+```bibtex
+@software{Kaczmarek_2026_AgentAck,
+  author = {Sylvester Kaczmarek},
+  title  = {AgentAck},
+  year   = {2026},
+  url    = {https://github.com/sylvesterkaczmarek/agentack}
+}
+```
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
