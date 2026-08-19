@@ -36,6 +36,25 @@ def _temporary_codex_home(path: Path) -> Iterator[None]:
             os.environ["CODEX_HOME"] = previous
 
 
+class _ExperimentalCodexAppServer(CodexAppServer):
+    """Codex client that opts into the structured experimental App Server surface.
+
+    Codex 0.148's own App Server integration client initializes every connection
+    with ``capabilities.experimentalApi = true``. AgentAck relies on that same
+    structured approval/turn surface and therefore advertises the capability
+    explicitly rather than depending on an implicit server default.
+    """
+
+    def request(self, method: str, params: dict[str, Any], *, timeout: float = 20) -> dict[str, Any]:
+        if method == "initialize":
+            params = dict(params)
+            capabilities = params.get("capabilities")
+            capabilities = dict(capabilities) if isinstance(capabilities, dict) else {}
+            capabilities["experimentalApi"] = True
+            params["capabilities"] = capabilities
+        return super().request(method, params, timeout=timeout)
+
+
 class _ProbePolicyServer:
     """Delegate App Server traffic while pinning the live approval-test policy."""
 
@@ -177,7 +196,7 @@ class CodexCLIAdapter(AgentAdapter):
                 with DeterministicCodexProvider(commands) as provider:
                     write_codex_probe_config(codex_home, provider_base_url=provider.base_url)
                     with _temporary_codex_home(codex_home):
-                        with CodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
+                        with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
                             server = _ProbePolicyServer(raw_server, root)
                             thread_id = start_ephemeral_thread(server, root)
                             approve = run_probe_turn(
