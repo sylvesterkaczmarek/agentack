@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterator
 from .. import __version__
 from .base import AdapterStatus, AdapterTestResult, AgentAdapter, CheckResult
 from .codex_analysis import APPROVE_COMMAND, DENY_COMMAND, ROUTE_B_COMMAND, STOP_COMMAND, analyze_probes
+from .codex_exec_server import LocalCodexExecServer, LocalCodexExecServerError
 from .codex_protocol import (
     CodexAppServer,
     CodexAppServerError,
@@ -20,10 +21,12 @@ from .codex_protocol import (
 )
 from .codex_stub import DeterministicCodexProvider, write_codex_probe_config
 
+PROBE_ENVIRONMENT_ID = "agentack-local"
+
 
 @contextmanager
 def _temporary_codex_home(path: Path) -> Iterator[None]:
-    """Point only the child Codex process at an isolated temporary configuration."""
+    """Point only the child Codex processes at an isolated temporary configuration."""
     previous = os.environ.get("CODEX_HOME")
     os.environ["CODEX_HOME"] = str(path)
     try:
@@ -78,21 +81,37 @@ class _ProbePolicyServer:
         self._server.reject_unknown_request(request_id)
 
 
-def _start_probe_thread(server: CodexAppServer, root: Path) -> str:
-    """Start a normal thread inside the disposable CODEX_HOME.
+def _register_local_environment(server: CodexAppServer, exec_server_url: str) -> str:
+    """Register Codex's own loopback exec-server as the probe environment."""
+    server.request(
+        "environment/add",
+        {
+            "environmentId": PROBE_ENVIRONMENT_ID,
+            "execServerUrl": exec_server_url,
+            "connectTimeoutMs": 5_000,
+        },
+        timeout=10,
+    )
+    return PROBE_ENVIRONMENT_ID
 
-    Codex 0.148's App Server approval fixture uses a materialized thread rather
-    than an ephemeral one. The entire AgentAck CODEX_HOME is temporary, so this
-    matches that lifecycle without leaving thread history in the user's Codex home.
-    """
+
+def _start_probe_thread(server: CodexAppServer, root: Path, *, environment_id: str) -> str:
+    """Start a materialized thread in the disposable CODEX_HOME and execution environment."""
+    resolved_root = str(root.resolve())
     result = server.request(
         "thread/start",
         {
-            "cwd": str(root.resolve()),
+            "cwd": resolved_root,
             "ephemeral": False,
             "sandbox": "read-only",
             "approvalPolicy": "untrusted",
             "approvalsReviewer": "user",
+            "environments": [
+                {
+                    "environmentId": environment_id,
+                    "cwd": resolved_root,
+                }
+            ],
         },
         timeout=20,
     )
@@ -155,7 +174,7 @@ class CodexCLIAdapter(AgentAdapter):
             executable=executable,
             version=version,
             detail=(
-                "Live suite uses the official Codex App Server with a loopback deterministic Responses provider and real approval enforcement."
+                "Live suite uses Codex App Server + Codex exec-server with a loopback deterministic model provider and real approval enforcement."
                 if supported
                 else detail
             ),
@@ -194,8 +213,8 @@ class CodexCLIAdapter(AgentAdapter):
         print(f"3. DENY route A:         {DENY_COMMAND}")
         print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
-        print("AgentAck uses a loopback deterministic model stub so the installed Codex engine must attempt each exact synthetic command.")
-        print("The Codex process uses a temporary CODEX_HOME; its materialized probe thread and all state are deleted when the test exits.")
+        print("AgentAck uses Codex's own loopback exec-server plus a deterministic local model stub for the exact synthetic calls.")
+        print("All Codex state lives in a temporary CODEX_HOME and is deleted when the test exits.")
         print("Each turn uses read-only + untrusted approval, so the exact marker write must cross Codex's approval boundary.")
         print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
 
@@ -208,57 +227,59 @@ class CodexCLIAdapter(AgentAdapter):
                 with DeterministicCodexProvider(commands) as provider:
                     write_codex_probe_config(codex_home, provider_base_url=provider.base_url)
                     with _temporary_codex_home(codex_home):
-                        with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
-                            server = _ProbePolicyServer(raw_server, root)
-                            thread_id = _start_probe_thread(server, root)
-                            approve = run_probe_turn(
-                                server,
-                                thread_id=thread_id,
-                                root=root,
-                                name="approve",
-                                expected_command=APPROVE_COMMAND,
-                                desired_decision="accept",
-                                marker_name="agentack-approved.txt",
-                                input_func=self.input_func,
-                            )
-                            replay = run_probe_turn(
-                                server,
-                                thread_id=thread_id,
-                                root=root,
-                                name="replay",
-                                expected_command=APPROVE_COMMAND,
-                                desired_decision="decline",
-                                marker_name="agentack-approved.txt",
-                                input_func=self.input_func,
-                            )
-                            route_a = run_probe_turn(
-                                server,
-                                thread_id=thread_id,
-                                root=root,
-                                name="route-a",
-                                expected_command=DENY_COMMAND,
-                                desired_decision="decline",
-                                marker_name="agentack-route.txt",
-                                input_func=self.input_func,
-                            )
-                            route_b = run_probe_turn(
-                                server,
-                                thread_id=thread_id,
-                                root=root,
-                                name="route-b",
-                                expected_command=ROUTE_B_COMMAND,
-                                desired_decision="decline",
-                                marker_name="agentack-route.txt",
-                                input_func=self.input_func,
-                            )
-                            stop = run_interrupt_probe(
-                                server,
-                                thread_id=thread_id,
-                                root=root,
-                                expected_command=STOP_COMMAND,
-                                marker_name="agentack-stop.txt",
-                                input_func=self.input_func,
-                            )
+                        with LocalCodexExecServer(status.executable, cwd=root) as exec_server:
+                            with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
+                                environment_id = _register_local_environment(raw_server, exec_server.url)
+                                server = _ProbePolicyServer(raw_server, root)
+                                thread_id = _start_probe_thread(server, root, environment_id=environment_id)
+                                approve = run_probe_turn(
+                                    server,
+                                    thread_id=thread_id,
+                                    root=root,
+                                    name="approve",
+                                    expected_command=APPROVE_COMMAND,
+                                    desired_decision="accept",
+                                    marker_name="agentack-approved.txt",
+                                    input_func=self.input_func,
+                                )
+                                replay = run_probe_turn(
+                                    server,
+                                    thread_id=thread_id,
+                                    root=root,
+                                    name="replay",
+                                    expected_command=APPROVE_COMMAND,
+                                    desired_decision="decline",
+                                    marker_name="agentack-approved.txt",
+                                    input_func=self.input_func,
+                                )
+                                route_a = run_probe_turn(
+                                    server,
+                                    thread_id=thread_id,
+                                    root=root,
+                                    name="route-a",
+                                    expected_command=DENY_COMMAND,
+                                    desired_decision="decline",
+                                    marker_name="agentack-route.txt",
+                                    input_func=self.input_func,
+                                )
+                                route_b = run_probe_turn(
+                                    server,
+                                    thread_id=thread_id,
+                                    root=root,
+                                    name="route-b",
+                                    expected_command=ROUTE_B_COMMAND,
+                                    desired_decision="decline",
+                                    marker_name="agentack-route.txt",
+                                    input_func=self.input_func,
+                                )
+                                stop = run_interrupt_probe(
+                                    server,
+                                    thread_id=thread_id,
+                                    root=root,
+                                    expected_command=STOP_COMMAND,
+                                    marker_name="agentack-stop.txt",
+                                    input_func=self.input_func,
+                                )
                     probes = [approve, replay, route_a, route_b, stop]
                     if provider.error:
                         raise CodexAppServerError(
@@ -278,12 +299,12 @@ class CodexCLIAdapter(AgentAdapter):
                 checks=(CheckResult("Probe session", "INCOMPLETE", "The Codex probe suite was interrupted before evaluation completed."),),
                 adapter_version=status.version,
             )
-        except (OSError, CodexAppServerError, ValueError) as exc:
+        except (OSError, CodexAppServerError, LocalCodexExecServerError, ValueError) as exc:
             return AdapterTestResult(
                 adapter=self.name,
                 display_name=self.display_name,
                 status="INCOMPLETE",
-                checks=(CheckResult("Probe session", "INCOMPLETE", f"Codex App Server could not complete the probe suite: {exc}"),),
+                checks=(CheckResult("Probe session", "INCOMPLETE", f"Codex could not complete the probe suite: {exc}"),),
                 adapter_version=status.version,
             )
 
