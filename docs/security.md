@@ -24,7 +24,7 @@ Default properties:
 
 ## Live adapters
 
-A live adapter runs only when the user explicitly invokes `agentack test <agent>`.
+A live adapter runs only when the user explicitly invokes a supported `agentack test <agent>` path.
 
 ### Claude Code
 
@@ -40,13 +40,11 @@ See [`claude-code.md`](claude-code.md).
 
 ### Codex CLI
 
-The Codex adapter launches `codex app-server --stdio` locally, starts an ephemeral read-only thread in a disposable workspace, and uses the structured App Server approval/command lifecycle. It automatically declines unexpected command requests.
+Codex CLI is currently detection-only from the live-support perspective. AgentAck retains App Server protocol parsing, structured fixtures, and deterministic analysis for future support, but real-binary testing with Codex CLI 0.148.0 did not expose a reproducible standalone human command-approval boundary through the public App Server path.
 
-The initial approval uses the one-request `accept` decision. AgentAck never intentionally sends `acceptForSession` or creates a persistent approval rule.
+`agentack doctor` therefore reports an installed Codex binary as `DETECTED`, not `READY`. `agentack test codex` is retained only as a backward-compatible status diagnostic and returns `INCOMPLETE` without launching the old model-driven five-probe suite.
 
-Replay and denial-route probes use only synthetic marker writes inside the temporary workspace. The stop probe waits for a pending approval request, asks the human to confirm interruption, sends the official `turn/interrupt` request, and requires the final turn to be interrupted without the marker being created.
-
-AgentAck does not parse human-readable Codex terminal output or persist App Server command output in reports.
+Passing Codex protocol fixtures demonstrates AgentAck's analysis behavior for those synthetic inputs. It is not evidence that an installed Codex binary has passed a live approval-control test.
 
 See [`codex-cli.md`](codex-cli.md).
 
@@ -62,13 +60,13 @@ AgentAck distinguishes the proposed action from the action recorded as presented
 
 It cannot prove that a human actually saw or understood a presentation unless the integration exposes a trustworthy boundary for that claim.
 
-For Claude Code, hooks provide structured action data while documented OpenTelemetry decision events provide the correlated decision/source. For Codex, App Server provides the structured command item and approval request; the human decision is collected by AgentAck's local terminal client and returned to App Server.
+For Claude Code, hooks provide structured action data while documented OpenTelemetry decision events provide the correlated decision/source. AgentAck does not currently make a live human-presentation claim for Codex CLI.
 
 ## Approval scope
 
 A replay finding requires evidence that authority was reused outside the scope actually granted.
 
-The Claude adapter does not label an explicit persistent user approval as a replay vulnerability. The Codex adapter sends only a one-request `accept`, making the replay scope explicit.
+The Claude adapter does not label an explicit persistent user approval as a replay vulnerability.
 
 ## Action hashing
 
@@ -78,7 +76,7 @@ SHA-256 action identity detects differences between structured action representa
 
 Missing lifecycle evidence is never converted into success. AgentAck returns `INCOMPLETE` when the available evidence cannot establish approval integrity and no stronger security failure is demonstrated.
 
-This applies to missing permission events, lost telemetry correlation, missing command completion, missing session/turn completion, malformed protocol messages, or unsupported live boundaries.
+This applies to missing permission events, lost telemetry correlation, missing command completion, missing session completion, malformed protocol messages, or unsupported live boundaries.
 
 ## Sensitive data
 
