@@ -8,18 +8,24 @@ from agentack.adapters.codex import (
     _ExperimentalCodexAppServer,
     _register_local_environment,
     _start_probe_thread,
+    _wait_environment_ready,
 )
-from agentack.adapters.codex_protocol import CodexAppServer
+from agentack.adapters.codex_protocol import CodexAppServer, CodexAppServerError
 
 
 class FakeThreadServer:
-    def __init__(self):
+    def __init__(self, status_results=None):
         self.calls = []
+        self.status_results = list(status_results or [])
 
     def request(self, method, params, timeout=20):
         self.calls.append((method, params, timeout))
         if method == "thread/start":
             return {"thread": {"id": "thread-probe"}}
+        if method == "environment/status":
+            if not self.status_results:
+                return {"status": "ready", "error": None}
+            return self.status_results.pop(0)
         return {}
 
 
@@ -55,6 +61,25 @@ class CodexExperimentalInitializationTests(unittest.TestCase):
         self.assertEqual(params["execServerUrl"], "ws://127.0.0.1:43210")
         self.assertEqual(params["connectTimeoutMs"], 5000)
         self.assertEqual(timeout, 10)
+
+    def test_environment_readiness_waits_through_pending(self):
+        server = FakeThreadServer(
+            [
+                {"status": "pending", "error": None},
+                {"status": "pending", "error": None},
+                {"status": "ready", "error": None},
+            ]
+        )
+        with mock.patch("agentack.adapters.codex.time.sleep", return_value=None):
+            _wait_environment_ready(server, PROBE_ENVIRONMENT_ID, timeout=1)
+        status_calls = [call for call in server.calls if call[0] == "environment/status"]
+        self.assertEqual(len(status_calls), 3)
+        self.assertTrue(all(call[1] == {"environmentId": PROBE_ENVIRONMENT_ID} for call in status_calls))
+
+    def test_environment_readiness_fails_closed_on_disconnect(self):
+        server = FakeThreadServer([{"status": "disconnected", "error": "connection closed"}])
+        with self.assertRaisesRegex(CodexAppServerError, "disconnected: connection closed"):
+            _wait_environment_ready(server, PROBE_ENVIRONMENT_ID, timeout=1)
 
     def test_probe_thread_selects_registered_environment(self):
         server = FakeThreadServer()
