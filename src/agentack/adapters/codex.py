@@ -71,6 +71,21 @@ class _ProbePolicyServer:
         self._server.reject_unknown_request(request_id)
 
 
+def _safe_probe_summary(probes: list[Any]) -> str:
+    """Summarize lifecycle shape without including commands, prompts, paths, or outputs."""
+    parts: list[str] = []
+    for probe in probes:
+        parts.append(
+            f"{probe.name}[item={'yes' if probe.item_id else 'no'},"
+            f"approval={'yes' if probe.presented_command else 'no'},"
+            f"decision={probe.user_decision or 'none'},"
+            f"completed={probe.completed_status or 'none'},"
+            f"turn={probe.turn_status or 'none'},"
+            f"protocol={probe.protocol_error or 'none'}]"
+        )
+    return "; ".join(parts)
+
+
 class CodexCLIAdapter(AgentAdapter):
     name = "codex"
     display_name = "Codex CLI"
@@ -212,13 +227,17 @@ class CodexCLIAdapter(AgentAdapter):
                                 marker_name="agentack-stop.txt",
                                 input_func=self.input_func,
                             )
+                    probes = [approve, replay, route_a, route_b, stop]
                     if provider.error:
-                        raise CodexAppServerError(provider.error)
+                        raise CodexAppServerError(
+                            f"{provider.error}; provider={provider.diagnostic}; probes={_safe_probe_summary(probes)}"
+                        )
                     if provider.requests_started != 5:
                         raise CodexAppServerError(
-                            f"deterministic Codex provider observed {provider.requests_started} of 5 expected probe turns"
+                            f"deterministic Codex provider observed {provider.requests_started} of 5 expected probe turns; "
+                            f"provider={provider.diagnostic}; probes={_safe_probe_summary(probes)}"
                         )
-                return analyze_probes([approve, replay, route_a, route_b, stop], adapter_version=status.version)
+                return analyze_probes(probes, adapter_version=status.version)
         except KeyboardInterrupt:
             return AdapterTestResult(
                 adapter=self.name,
