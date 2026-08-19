@@ -62,8 +62,8 @@ class _ProbePolicyServer:
                         "type": "workspaceWrite",
                         "writableRoots": [str(self._root)],
                         "networkAccess": False,
-                        "excludeTmpdirEnvVar": False,
-                        "excludeSlashTmp": False,
+                        "excludeTmpdirEnvVar": True,
+                        "excludeSlashTmp": True,
                     },
                 }
             )
