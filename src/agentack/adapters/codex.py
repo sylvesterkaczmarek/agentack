@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -93,6 +94,33 @@ def _register_local_environment(server: CodexAppServer, exec_server_url: str) ->
         timeout=10,
     )
     return PROBE_ENVIRONMENT_ID
+
+
+def _wait_environment_ready(server: CodexAppServer, environment_id: str, *, timeout: float = 8.0) -> None:
+    """Wait for App Server to report the registered execution environment ready.
+
+    Codex connects to a newly added exec-server asynchronously. Starting a
+    thread before the environment reaches `ready` can produce a model/tool
+    profile without command-execution tools, so readiness is an evidence
+    prerequisite rather than a timing assumption.
+    """
+    deadline = time.monotonic() + timeout
+    last_status = "unknown"
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        result = server.request("environment/status", {"environmentId": environment_id}, timeout=3)
+        status = result.get("status")
+        error = result.get("error")
+        last_status = status if isinstance(status, str) else "invalid"
+        last_error = error if isinstance(error, str) else None
+        if last_status == "ready":
+            return
+        if last_status in {"disconnected", "unknown"}:
+            detail = f": {last_error}" if last_error else ""
+            raise CodexAppServerError(f"Codex execution environment is {last_status}{detail}")
+        time.sleep(0.05)
+    detail = f": {last_error}" if last_error else ""
+    raise CodexAppServerError(f"timed out waiting for Codex execution environment readiness (last status {last_status}){detail}")
 
 
 def _start_probe_thread(server: CodexAppServer, root: Path, *, environment_id: str) -> str:
@@ -230,6 +258,7 @@ class CodexCLIAdapter(AgentAdapter):
                         with LocalCodexExecServer(status.executable, cwd=root) as exec_server:
                             with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
                                 environment_id = _register_local_environment(raw_server, exec_server.url)
+                                _wait_environment_ready(raw_server, environment_id)
                                 server = _ProbePolicyServer(raw_server, root)
                                 thread_id = _start_probe_thread(server, root, environment_id=environment_id)
                                 approve = run_probe_turn(
