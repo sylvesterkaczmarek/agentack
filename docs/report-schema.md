@@ -11,7 +11,7 @@ Current report schema version: `1`.
   "report_schema_version": 1,
   "producer": {
     "name": "AgentAck",
-    "version": "0.6.0"
+    "version": "0.6.3"
   },
   "run": {
     "run_id": "UUID",
@@ -26,7 +26,7 @@ Current report schema version: `1`.
 }
 ```
 
-`kind` is `trace` for `agentack check` and `adapter` for a live adapter test.
+`kind` is `trace` for `agentack check` and `adapter` for an adapter result.
 
 ## Input provenance
 

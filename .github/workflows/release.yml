@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Validate release ref and version
         id: version
         shell: bash
@@ -91,7 +91,7 @@ jobs:
     steps:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       - name: Install released package from PyPI
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -115,7 +115,14 @@ jobs:
           done
           test "$(.pypi-venv/bin/agentack --version)" = "agentack ${VERSION}"
           .pypi-venv/bin/agentack demo
+          .pypi-venv/bin/agentack doctor
           .pypi-venv/bin/agentack coverage
+          set +e
+          .pypi-venv/bin/agentack test codex >/tmp/agentack-release-codex.txt
+          codex_code=$?
+          set -e
+          test "$codex_code" -eq 3
+          grep -q "Codex live approval boundary" /tmp/agentack-release-codex.txt
 
   github-release:
     name: Create GitHub release

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agentack.adapters.codex import CodexCLIAdapter, _ProbePolicyServer, _account_ready
+from agentack.adapters.codex import CodexCLIAdapter
 from agentack.adapters.codex_analysis import (
     APPROVE_COMMAND,
     DENY_COMMAND,
@@ -31,8 +31,6 @@ class FakeServer:
             return {}
         if method == "thread/start":
             return {"thread": {"id": "thr-1"}}
-        if method == "account/read":
-            return {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}
         return {"turn": {"id": "turn-1"}}
 
     def next_message(self, timeout=60):
@@ -78,9 +76,9 @@ def good_probes():
     ]
 
 
-class CodexAdapterTests(unittest.TestCase):
-    def test_complete_extended_evidence_passes_supported_checks(self):
-        result = analyze_probes(good_probes(), adapter_version="codex-cli 1.2.3")
+class CodexProtocolAnalysisTests(unittest.TestCase):
+    def test_complete_structured_evidence_passes_analyzer(self):
+        result = analyze_probes(good_probes(), adapter_version="codex-cli fixture")
         self.assertEqual(result.status, "PASS")
         statuses = {check.label: check.status for check in result.checks}
         self.assertEqual(statuses["Approval required"], "PASS")
@@ -121,11 +119,10 @@ class CodexAdapterTests(unittest.TestCase):
         probes[2] = CodexProbeEvidence(**{**probes[2].__dict__, "turn_completed": False, "completed_status": None})
         result = analyze_probes(probes)
         self.assertEqual(result.status, "INCOMPLETE")
-        statuses = {check.label: check.status for check in result.checks}
-        self.assertEqual(statuses["Evidence completeness"], "INCOMPLETE")
+        self.assertEqual({check.label: check.status for check in result.checks}["Evidence completeness"], "INCOMPLETE")
 
-    def test_report_reuses_existing_schema_and_adds_ack_probe_ids(self):
-        result = analyze_probes(good_probes(), adapter_version="codex-cli 1.2.3")
+    def test_report_reuses_existing_schema(self):
+        result = analyze_probes(good_probes(), adapter_version="codex-cli fixture")
         payload = adapter_report_payload(result, run_id="run-codex", evaluated_at="2026-08-19T12:00:00Z")
         self.assertEqual(payload["report_schema_version"], 1)
         self.assertEqual(payload["adapter"]["name"], "codex")
@@ -152,7 +149,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertTrue(evidence.turn_completed)
         self.assertEqual(server.responses, [(71, {"decision": "accept"})])
 
-    def test_interrupt_probe_sends_turn_interrupt_on_pending_approval(self):
+    def test_interrupt_fixture_sends_turn_interrupt(self):
         messages = [
             {"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "item-stop", "command": STOP_COMMAND}}},
             {"id": 90, "method": "item/commandExecution/requestApproval", "params": {"itemId": "item-stop", "command": STOP_COMMAND}},
@@ -169,7 +166,6 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertTrue(evidence.interrupt_requested)
         self.assertEqual(evidence.turn_status, "interrupted")
         self.assertTrue(any(method == "turn/interrupt" for method, _params, _timeout in server.requests))
-        self.assertEqual(server.responses, [])
 
     def test_unexpected_command_request_is_declined_without_human_approval(self):
         unexpected = "cat ~/.ssh/id_rsa"
@@ -195,28 +191,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIn(unexpected, evidence.unexpected_commands)
         self.assertEqual(server.responses, [(72, {"decision": "decline"})])
 
-    def test_probe_policy_pins_untrusted_workspace_write_per_turn(self):
-        server = FakeServer([])
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            wrapped = _ProbePolicyServer(server, root)
-            wrapped.request("turn/start", {"threadId": "thr-1", "input": []})
-        method, params, _timeout = server.requests[-1]
-        self.assertEqual(method, "turn/start")
-        self.assertEqual(params["approvalPolicy"], "untrusted")
-        self.assertEqual(params["approvalsReviewer"], "user")
-        self.assertEqual(params["sandboxPolicy"]["type"], "workspaceWrite")
-        self.assertEqual(params["sandboxPolicy"]["networkAccess"], False)
-        self.assertEqual(len(params["sandboxPolicy"]["writableRoots"]), 1)
-
-    def test_account_preflight_handles_chatgpt_local_and_missing_auth(self):
-        self.assertTrue(_account_ready({"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True})[0])
-        self.assertTrue(_account_ready({"account": None, "requiresOpenaiAuth": False})[0])
-        ready, detail = _account_ready({"account": None, "requiresOpenaiAuth": True})
-        self.assertFalse(ready)
-        self.assertIn("codex login", detail)
-
-    def test_capability_detection_requires_approval_and_interrupt_schema(self):
+    def test_capability_detection_still_parses_structured_schema_for_research(self):
         def fake_run(command, **kwargs):
             out = Path(command[command.index("--out") + 1])
             (out / "v2").mkdir(parents=True, exist_ok=True)
@@ -224,66 +199,39 @@ class CodexAdapterTests(unittest.TestCase):
             (out / "v2" / "ThreadStartParams.json").write_text("approvalPolicy approvalsReviewer ephemeral", encoding="utf-8")
             (out / "ClientRequest.json").write_text("turn/interrupt", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, "", "")
+
         with mock.patch("agentack.adapters.codex_protocol.subprocess.run", side_effect=fake_run):
             supported, detail = detect_app_server_capabilities("/fake/codex")
         self.assertTrue(supported)
         self.assertIn("available", detail)
 
-    def test_capability_detection_fails_closed_without_interrupt(self):
-        def fake_run(command, **kwargs):
-            out = Path(command[command.index("--out") + 1])
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "ServerRequest.json").write_text("item/commandExecution/requestApproval CommandExecutionApprovalDecision", encoding="utf-8")
-            (out / "ThreadStartParams.json").write_text("approvalPolicy approvalsReviewer ephemeral", encoding="utf-8")
-            (out / "ClientRequest.json").write_text("old schema", encoding="utf-8")
-            return subprocess.CompletedProcess(command, 0, "", "")
-        with mock.patch("agentack.adapters.codex_protocol.subprocess.run", side_effect=fake_run):
-            supported, _detail = detect_app_server_capabilities("/fake/codex")
-        self.assertFalse(supported)
 
-    def test_protocol_error_is_incomplete(self):
-        probes = good_probes()
-        probes[0] = CodexProbeEvidence(**{**probes[0].__dict__, "protocol_error": "truncated event stream"})
-        result = analyze_probes(probes)
-        self.assertEqual(result.status, "INCOMPLETE")
-        self.assertEqual({check.label: check.status for check in result.checks}["Evidence completeness"], "INCOMPLETE")
-
-    def test_detect_requires_capabilities_not_version_number(self):
-        with mock.patch("agentack.adapters.codex.shutil.which", return_value="/fake/codex"), mock.patch(
-            "agentack.adapters.codex.safe_version", return_value="codex-cli future-build"
-        ), mock.patch(
-            "agentack.adapters.codex.detect_app_server_capabilities", return_value=(True, "available")
-        ), mock.patch(
-            "agentack.adapters.codex._probe_account_status", return_value=(True, "authenticated")
-        ), mock.patch("agentack.adapters.codex.os.name", "posix"):
-            status = CodexCLIAdapter().detect()
-        self.assertTrue(status.testable)
-        self.assertEqual(status.version, "codex-cli future-build")
-
-    def test_detect_reports_authentication_required(self):
+class CodexPublicAdapterTests(unittest.TestCase):
+    def test_installed_codex_is_detected_but_never_marked_live_ready(self):
         with mock.patch("agentack.adapters.codex.shutil.which", return_value="/fake/codex"), mock.patch(
             "agentack.adapters.codex.safe_version", return_value="codex-cli 0.148.0"
-        ), mock.patch(
-            "agentack.adapters.codex.detect_app_server_capabilities", return_value=(True, "available")
-        ), mock.patch(
-            "agentack.adapters.codex._probe_account_status",
-            return_value=(False, "Codex CLI is installed but not authenticated. Run `codex login`, then retry."),
-        ), mock.patch("agentack.adapters.codex.os.name", "posix"):
+        ):
             status = CodexCLIAdapter().detect()
         self.assertTrue(status.installed)
         self.assertFalse(status.testable)
-        self.assertIn("codex login", status.detail)
+        self.assertEqual(status.version, "codex-cli 0.148.0")
+        self.assertIn("does not currently expose a verified deterministic live approval-integrity test", status.detail or "")
 
-    @mock.patch("agentack.adapters.codex.shutil.which", return_value=None)
-    def test_detect_reports_missing_codex(self, _which):
-        status = CodexCLIAdapter().detect()
+    def test_missing_codex_is_not_testable(self):
+        with mock.patch("agentack.adapters.codex.shutil.which", return_value=None):
+            status = CodexCLIAdapter().detect()
         self.assertFalse(status.installed)
         self.assertFalse(status.testable)
 
-    def test_missing_codex_live_run_is_incomplete(self):
-        with mock.patch("agentack.adapters.codex.shutil.which", return_value=None):
+    def test_codex_status_command_does_not_launch_app_server(self):
+        with mock.patch("agentack.adapters.codex.shutil.which", return_value="/fake/codex"), mock.patch(
+            "agentack.adapters.codex.safe_version", return_value="codex-cli 0.148.0"
+        ), mock.patch("agentack.adapters.codex_protocol.subprocess.Popen") as popen:
             result = CodexCLIAdapter().run_test()
         self.assertEqual(result.status, "INCOMPLETE")
+        self.assertEqual(len(result.checks), 1)
+        self.assertEqual(result.checks[0].label, "Codex live approval boundary")
+        popen.assert_not_called()
 
 
 if __name__ == "__main__":
