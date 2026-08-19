@@ -1,32 +1,26 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from agentack.adapters.codex import (
-    PROBE_ENVIRONMENT_ID,
+    _CODEX_EXEC_SERVER_URL,
+    _CODEX_NOISE_ENV_VARS,
     _ExperimentalCodexAppServer,
-    _register_local_environment,
     _start_probe_thread,
-    _wait_environment_ready,
+    _temporary_codex_environment,
 )
-from agentack.adapters.codex_protocol import CodexAppServer, CodexAppServerError
+from agentack.adapters.codex_protocol import CodexAppServer
 
 
 class FakeThreadServer:
-    def __init__(self, status_results=None):
+    def __init__(self):
         self.calls = []
-        self.status_results = list(status_results or [])
 
     def request(self, method, params, timeout=20):
         self.calls.append((method, params, timeout))
-        if method == "thread/start":
-            return {"thread": {"id": "thread-probe"}}
-        if method == "environment/status":
-            if not self.status_results:
-                return {"status": "ready", "error": None}
-            return self.status_results.pop(0)
-        return {}
+        return {"thread": {"id": "thread-probe"}}
 
 
 class CodexExperimentalInitializationTests(unittest.TestCase):
@@ -51,41 +45,30 @@ class CodexExperimentalInitializationTests(unittest.TestCase):
         params = parent_request.call_args.args[1]
         self.assertNotIn("capabilities", params)
 
-    def test_local_exec_server_is_registered_as_probe_environment(self):
-        server = FakeThreadServer()
-        environment_id = _register_local_environment(server, "ws://127.0.0.1:43210")
-        self.assertEqual(environment_id, PROBE_ENVIRONMENT_ID)
-        method, params, timeout = server.calls[-1]
-        self.assertEqual(method, "environment/add")
-        self.assertEqual(params["environmentId"], PROBE_ENVIRONMENT_ID)
-        self.assertEqual(params["execServerUrl"], "ws://127.0.0.1:43210")
-        self.assertEqual(params["connectTimeoutMs"], 5000)
-        self.assertEqual(timeout, 10)
+    def test_temporary_environment_selects_native_exec_url_and_clears_noise(self):
+        keys = ("CODEX_HOME", _CODEX_EXEC_SERVER_URL, *_CODEX_NOISE_ENV_VARS)
+        previous = {key: os.environ.get(key) for key in keys}
+        try:
+            for key in _CODEX_NOISE_ENV_VARS:
+                os.environ[key] = "host-value"
+            with tempfile.TemporaryDirectory() as directory:
+                with _temporary_codex_environment(Path(directory), "ws://127.0.0.1:43210"):
+                    self.assertEqual(os.environ.get("CODEX_HOME"), directory)
+                    self.assertEqual(os.environ.get(_CODEX_EXEC_SERVER_URL), "ws://127.0.0.1:43210")
+                    for key in _CODEX_NOISE_ENV_VARS:
+                        self.assertNotIn(key, os.environ)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
-    def test_environment_readiness_waits_through_pending(self):
-        server = FakeThreadServer(
-            [
-                {"status": "pending", "error": None},
-                {"status": "pending", "error": None},
-                {"status": "ready", "error": None},
-            ]
-        )
-        with mock.patch("agentack.adapters.codex.time.sleep", return_value=None):
-            _wait_environment_ready(server, PROBE_ENVIRONMENT_ID, timeout=1)
-        status_calls = [call for call in server.calls if call[0] == "environment/status"]
-        self.assertEqual(len(status_calls), 3)
-        self.assertTrue(all(call[1] == {"environmentId": PROBE_ENVIRONMENT_ID} for call in status_calls))
-
-    def test_environment_readiness_fails_closed_on_disconnect(self):
-        server = FakeThreadServer([{"status": "disconnected", "error": "connection closed"}])
-        with self.assertRaisesRegex(CodexAppServerError, "disconnected: connection closed"):
-            _wait_environment_ready(server, PROBE_ENVIRONMENT_ID, timeout=1)
-
-    def test_probe_thread_selects_registered_environment(self):
+    def test_probe_thread_uses_default_environment_without_explicit_selection(self):
         server = FakeThreadServer()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            thread_id = _start_probe_thread(server, root, environment_id=PROBE_ENVIRONMENT_ID)
+            thread_id = _start_probe_thread(server, root)
             resolved_root = str(root.resolve())
         self.assertEqual(thread_id, "thread-probe")
         method, params, _timeout = server.calls[-1]
@@ -95,10 +78,7 @@ class CodexExperimentalInitializationTests(unittest.TestCase):
         self.assertEqual(params["approvalPolicy"], "untrusted")
         self.assertEqual(params["approvalsReviewer"], "user")
         self.assertEqual(params["cwd"], resolved_root)
-        self.assertEqual(
-            params["environments"],
-            [{"environmentId": PROBE_ENVIRONMENT_ID, "cwd": resolved_root}],
-        )
+        self.assertNotIn("environments", params)
 
 
 if __name__ == "__main__":
