@@ -30,9 +30,10 @@ def _sse(events: Sequence[dict[str, Any]]) -> bytes:
 
 
 def _execution_tool(tools: tuple[str, ...]) -> str | None:
-    # Codex model profiles can expose the legacy shell_command function or the
-    # unified exec_command function. Both enter Codex's command-execution and
-    # approval lifecycle; never invent a tool that the installed binary did not advertise.
+    # Prefer the legacy shell path because Codex 0.148's App Server approval
+    # fixtures exercise CommandExecutionRequestApproval through shell_command.
+    # The exec_command fallback is retained only for fail-closed diagnostics if
+    # a future compatible build ignores the temporary unified_exec override.
     if "shell_command" in tools:
         return "shell_command"
     if "exec_command" in tools:
@@ -44,7 +45,6 @@ def _execution_arguments(tool: str, command: str) -> dict[str, Any]:
     if tool == "shell_command":
         return {"command": command, "timeout_ms": 30_000}
     if tool == "exec_command":
-        # Match Codex 0.148's App Server helper exactly.
         return {"cmd": command, "yield_time_ms": 500}
     raise ValueError(f"unsupported deterministic Codex execution tool: {tool}")
 
@@ -263,6 +263,9 @@ def write_codex_probe_config(codex_home: Path, *, provider_base_url: str) -> Non
 model_provider = "agentack_local"
 approval_policy = "untrusted"
 sandbox_mode = "read-only"
+
+[features]
+unified_exec = false
 
 [model_providers.agentack_local]
 name = "AgentAck deterministic local probe"
