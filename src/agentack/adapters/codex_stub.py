@@ -44,7 +44,8 @@ def _execution_arguments(tool: str, command: str) -> dict[str, Any]:
     if tool == "shell_command":
         return {"command": command, "timeout_ms": 30_000}
     if tool == "exec_command":
-        return {"cmd": command, "yield_time_ms": 1_000}
+        # Match Codex 0.148's App Server helper exactly.
+        return {"cmd": command, "yield_time_ms": 500}
     raise ValueError(f"unsupported deterministic Codex execution tool: {tool}")
 
 
@@ -256,12 +257,12 @@ class DeterministicCodexProvider:
 
 
 def write_codex_probe_config(codex_home: Path, *, provider_base_url: str) -> None:
-    """Write an isolated Codex config following Codex 0.148's own test-provider pattern."""
+    """Write an isolated Codex config following Codex 0.148's approval-test pattern."""
     codex_home.mkdir(parents=True, exist_ok=True)
     config = f'''model = "{PROBE_MODEL}"
 model_provider = "agentack_local"
 approval_policy = "untrusted"
-sandbox_mode = "workspace-write"
+sandbox_mode = "read-only"
 
 [model_providers.agentack_local]
 name = "AgentAck deterministic local probe"
