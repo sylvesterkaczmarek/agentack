@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agentack.adapters.codex import _ExperimentalCodexAppServer, _start_probe_thread
+from agentack.adapters.codex import (
+    PROBE_ENVIRONMENT_ID,
+    _ExperimentalCodexAppServer,
+    _register_local_environment,
+    _start_probe_thread,
+)
 from agentack.adapters.codex_protocol import CodexAppServer
 
 
@@ -13,7 +18,9 @@ class FakeThreadServer:
 
     def request(self, method, params, timeout=20):
         self.calls.append((method, params, timeout))
-        return {"thread": {"id": "thread-probe"}}
+        if method == "thread/start":
+            return {"thread": {"id": "thread-probe"}}
+        return {}
 
 
 class CodexExperimentalInitializationTests(unittest.TestCase):
@@ -38,11 +45,23 @@ class CodexExperimentalInitializationTests(unittest.TestCase):
         params = parent_request.call_args.args[1]
         self.assertNotIn("capabilities", params)
 
-    def test_probe_thread_is_materialized_only_inside_temporary_home(self):
+    def test_local_exec_server_is_registered_as_probe_environment(self):
+        server = FakeThreadServer()
+        environment_id = _register_local_environment(server, "ws://127.0.0.1:43210")
+        self.assertEqual(environment_id, PROBE_ENVIRONMENT_ID)
+        method, params, timeout = server.calls[-1]
+        self.assertEqual(method, "environment/add")
+        self.assertEqual(params["environmentId"], PROBE_ENVIRONMENT_ID)
+        self.assertEqual(params["execServerUrl"], "ws://127.0.0.1:43210")
+        self.assertEqual(params["connectTimeoutMs"], 5000)
+        self.assertEqual(timeout, 10)
+
+    def test_probe_thread_selects_registered_environment(self):
         server = FakeThreadServer()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            thread_id = _start_probe_thread(server, root)
+            thread_id = _start_probe_thread(server, root, environment_id=PROBE_ENVIRONMENT_ID)
+            resolved_root = str(root.resolve())
         self.assertEqual(thread_id, "thread-probe")
         method, params, _timeout = server.calls[-1]
         self.assertEqual(method, "thread/start")
@@ -50,7 +69,11 @@ class CodexExperimentalInitializationTests(unittest.TestCase):
         self.assertEqual(params["sandbox"], "read-only")
         self.assertEqual(params["approvalPolicy"], "untrusted")
         self.assertEqual(params["approvalsReviewer"], "user")
-        self.assertEqual(Path(params["cwd"]), root.resolve())
+        self.assertEqual(params["cwd"], resolved_root)
+        self.assertEqual(
+            params["environments"],
+            [{"environmentId": PROBE_ENVIRONMENT_ID, "cwd": resolved_root}],
+        )
 
 
 if __name__ == "__main__":
