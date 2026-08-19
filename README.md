@@ -10,14 +10,20 @@ AgentAck is a local-first CLI for checking whether agent actions remain bound to
 
 ## Try it
 
+For the CLI, install AgentAck in an isolated environment with `pipx`:
+
 ```bash
-git clone https://github.com/sylvesterkaczmarek/agentack.git
-cd agentack
-python -m pip install .
+pipx install agentack
 
 agentack demo
 agentack doctor
 agentack coverage
+```
+
+Or install it with pip if you also want to import the Python package:
+
+```bash
+python -m pip install agentack
 ```
 
 `agentack demo` needs no agent account:
