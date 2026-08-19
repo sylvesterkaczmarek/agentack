@@ -27,8 +27,9 @@ def render_adapter_test(result: AdapterTestResult) -> str:
 
 
 def render_doctor(statuses: Iterable[AdapterStatus], discovered: Iterable[tuple[str, str, str | None]]) -> str:
+    status_list = list(statuses)
     lines = ["AgentAck doctor", ""]
-    for status in statuses:
+    for status in status_list:
         state = "READY" if status.testable else "NOT FOUND" if not status.installed else "DETECTED"
         extra = status.version or status.executable or ""
         lines.append(f"{status.display_name:<20} {state:<10} {extra}".rstrip())
@@ -38,10 +39,10 @@ def render_doctor(statuses: Iterable[AdapterStatus], discovered: Iterable[tuple[
         lines.append(f"{display_name:<20} {state:<10}".rstrip())
         if detail:
             lines.append(f"  {detail}")
-    if any(status.testable for status in statuses):
-        lines.append("")
-        lines.append("Run: agentack test claude")
+    ready = [status.name for status in status_list if status.testable]
+    lines.append("")
+    if ready:
+        lines.append("Run: " + " | ".join(f"agentack test {name}" for name in ready))
     else:
-        lines.append("")
         lines.append("No live AgentAck adapter is ready on this machine. `agentack demo` still works without an agent account.")
     return "\n".join(lines)

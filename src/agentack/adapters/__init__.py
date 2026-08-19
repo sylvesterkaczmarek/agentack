@@ -2,6 +2,7 @@
 
 from .base import AdapterStatus, AdapterTestResult, AgentAdapter, CheckResult
 from .claude import ClaudeCodeAdapter
+from .codex import CodexCLIAdapter
 
 __all__ = [
     "AdapterStatus",
@@ -9,4 +10,5 @@ __all__ = [
     "AgentAdapter",
     "CheckResult",
     "ClaudeCodeAdapter",
+    "CodexCLIAdapter",
 ]

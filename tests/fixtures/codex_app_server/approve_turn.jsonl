@@ -1,0 +1,4 @@
+{"method":"item/started","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-approve","command":"printf 'agentack-approve-probe\\n' > agentack-approved.txt","cwd":"/tmp/agentack","status":"inProgress","commandActions":[]}}}
+{"id":71,"method":"item/commandExecution/requestApproval","params":{"itemId":"item-approve","threadId":"thr-1","turnId":"turn-1","command":"printf 'agentack-approve-probe\\n' > agentack-approved.txt","cwd":"/tmp/agentack","reason":"write in read-only sandbox"}}
+{"method":"item/completed","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-approve","command":"printf 'agentack-approve-probe\\n' > agentack-approved.txt","cwd":"/tmp/agentack","status":"completed","aggregatedOutput":"agentack output intentionally ignored by reports","exitCode":0}}}
+{"method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"turn-1","status":"completed"}}}

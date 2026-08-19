@@ -33,24 +33,27 @@ The broken demo changes the command after approval; AgentAck detects the mismatc
 Next: agentack doctor
 ```
 
-If Claude Code is installed:
+Run a live adapter when `doctor` reports it as `READY`:
 
 ```bash
 agentack test claude
+agentack test codex
 ```
-
-The live probe asks you to approve one harmless `echo` action and reject another using Claude Code's native permission UI. AgentAck checks the correlated hook and permission-decision evidence.
 
 ## Supported integrations
 
 | Agent | Detected by `doctor` | Live `agentack test` | Evidence path |
 | --- | --- | --- | --- |
 | Claude Code | yes | **yes** | official hooks + `tool_decision` telemetry |
-| Codex CLI | yes | not yet | detection only |
+| Codex CLI | yes | **yes** | official App Server approval request + `commandExecution` lifecycle |
 | Gemini CLI | yes | not yet | detection only |
 | Cursor CLI | yes | not yet | detection only |
 
-Only integrations with a working evidence path are exposed by `agentack test`. See [`docs/claude-code.md`](docs/claude-code.md).
+Codex support is capability-detected from the installed App Server schema, not from a hard-coded version number. On native Windows, use Codex and AgentAck inside WSL for the current live probe.
+
+The Claude adapter tests Claude's native permission UI. The Codex adapter uses Codex's official local App Server protocol: **you make the decision in AgentAck's terminal prompt and AgentAck sends that decision to Codex**. It tests Codex App Server approval/enforcement, not how the Codex TUI or VS Code extension renders its approval UI.
+
+See [`docs/claude-code.md`](docs/claude-code.md) and [`docs/codex-cli.md`](docs/codex-cli.md).
 
 ## What it detects
 
@@ -68,25 +71,13 @@ Only integrations with a working evidence path are exposed by `agentack test`. S
 
 Missing evidence returns `INCOMPLETE`, not a silent pass.
 
-## Terminal results
+## Live results
 
-```text
-AgentAck  FAIL
-Trace: action-swap.jsonl
-Events: 5
-Findings: 1
-
-CRITICAL ACK003 Action identity changed
-  Evidence: executed action differs from the action presented for human approval
-  Why:      The proposed, human-presented, approved or executed action identity is inconsistent across the approval boundary.
-  Next:     Bind approval to the exact structured action shown to the human and reject execution when any security-relevant field changes afterward.
-```
-
-Live adapter results use the same `PASS`, `FAIL`, `INCOMPLETE`, and `SKIP` vocabulary:
+Both live adapters use the same result vocabulary:
 
 ```text
 AgentAck  PASS
-Integration: Claude Code
+Integration: Codex CLI
 
 Probe isolation              PASS
 Approval required            PASS
@@ -98,12 +89,15 @@ Stop enforcement             SKIP
 Session completion           PASS
 ```
 
+A check that the adapter cannot establish is `INCOMPLETE` or `SKIP`, never an invented `PASS`.
+
 ## Commands
 
 ```bash
 agentack demo                         # secure + deliberately broken showcase
-agentack doctor                       # detect available integrations
+agentack doctor                       # detect/capability-check available integrations
 agentack test claude                  # live Claude Code approval probe
+agentack test codex                   # live Codex App Server approval probe
 agentack check trace.jsonl            # evaluate an AgentAck trace
 agentack check trace.jsonl --json report.json --sarif report.sarif
 agentack rules
@@ -133,7 +127,7 @@ JSON and SARIF reports carry a versioned provenance envelope suitable for local 
 - structured proposed, presented, and executed action identities;
 - result status, findings, and remediation.
 
-Action parameters and raw telemetry payloads are not copied into the report. Action identities contain canonical tool/operation names plus SHA-256 digests.
+Action parameters and raw telemetry/App Server output are not copied into reports. Action identities contain canonical tool/operation names plus SHA-256 digests.
 
 The hashes identify bytes or canonical structures. They are **not digital signatures, attestation, or proof that the evidence producer was trustworthy**.
 
@@ -207,6 +201,8 @@ See [`docs/standards-mapping.md`](docs/standards-mapping.md).
 ## Security
 
 The deterministic checker treats trace and policy files as untrusted data and does not execute commands represented in traces. Live adapters run only when explicitly invoked.
+
+The Codex live adapter uses an ephemeral thread, a temporary workspace, a read-only sandbox, two exact synthetic commands, and automatically declines unexpected command approval requests. It does not intentionally create session-wide or persistent approval rules.
 
 See [`SECURITY.md`](SECURITY.md) for vulnerability reporting and [`docs/security.md`](docs/security.md) for the trust model and live-adapter boundaries.
 
