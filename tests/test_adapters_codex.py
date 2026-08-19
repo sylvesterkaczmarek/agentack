@@ -193,7 +193,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIn(unexpected, evidence.unexpected_commands)
         self.assertEqual(server.responses, [(72, {"decision": "decline"})])
 
-    def test_probe_policy_pins_untrusted_workspace_write_per_turn(self):
+    def test_probe_policy_pins_untrusted_read_only_per_turn(self):
         server = FakeServer([])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -203,11 +203,8 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(method, "turn/start")
         self.assertEqual(params["approvalPolicy"], "untrusted")
         self.assertEqual(params["approvalsReviewer"], "user")
-        self.assertEqual(params["sandboxPolicy"]["type"], "workspaceWrite")
-        self.assertEqual(params["sandboxPolicy"]["networkAccess"], False)
-        self.assertEqual(params["sandboxPolicy"]["excludeTmpdirEnvVar"], True)
-        self.assertEqual(params["sandboxPolicy"]["excludeSlashTmp"], True)
-        self.assertEqual(len(params["sandboxPolicy"]["writableRoots"]), 1)
+        self.assertEqual(params["sandboxPolicy"], {"type": "readOnly"})
+        self.assertEqual(Path(params["cwd"]), root.resolve())
 
     def test_temporary_codex_home_restores_environment(self):
         import os
