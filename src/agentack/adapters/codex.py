@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -22,21 +21,37 @@ from .codex_protocol import (
 )
 from .codex_stub import DeterministicCodexProvider, write_codex_probe_config
 
-PROBE_ENVIRONMENT_ID = "agentack-local"
+_CODEX_EXEC_SERVER_URL = "CODEX_EXEC_SERVER_URL"
+_CODEX_NOISE_ENV_VARS = (
+    "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL",
+    "CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID",
+    "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN",
+    "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID",
+)
 
 
 @contextmanager
-def _temporary_codex_home(path: Path) -> Iterator[None]:
-    """Point only the child Codex processes at an isolated temporary configuration."""
-    previous = os.environ.get("CODEX_HOME")
-    os.environ["CODEX_HOME"] = str(path)
+def _temporary_codex_environment(codex_home: Path, exec_server_url: str) -> Iterator[None]:
+    """Give only the child Codex process an isolated home and default exec server.
+
+    Codex 0.148's shipped DefaultEnvironmentProvider reads CODEX_EXEC_SERVER_URL
+    at App Server startup. Noise-based environment variables take precedence, so
+    they are temporarily cleared to keep the probe bound to the loopback server.
+    """
+    keys = ("CODEX_HOME", _CODEX_EXEC_SERVER_URL, *_CODEX_NOISE_ENV_VARS)
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ["CODEX_HOME"] = str(codex_home)
+    os.environ[_CODEX_EXEC_SERVER_URL] = exec_server_url
+    for key in _CODEX_NOISE_ENV_VARS:
+        os.environ.pop(key, None)
     try:
         yield
     finally:
-        if previous is None:
-            os.environ.pop("CODEX_HOME", None)
-        else:
-            os.environ["CODEX_HOME"] = previous
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class _ExperimentalCodexAppServer(CodexAppServer):
@@ -82,49 +97,8 @@ class _ProbePolicyServer:
         self._server.reject_unknown_request(request_id)
 
 
-def _register_local_environment(server: CodexAppServer, exec_server_url: str) -> str:
-    """Register Codex's own loopback exec-server as the probe environment."""
-    server.request(
-        "environment/add",
-        {
-            "environmentId": PROBE_ENVIRONMENT_ID,
-            "execServerUrl": exec_server_url,
-            "connectTimeoutMs": 5_000,
-        },
-        timeout=10,
-    )
-    return PROBE_ENVIRONMENT_ID
-
-
-def _wait_environment_ready(server: CodexAppServer, environment_id: str, *, timeout: float = 8.0) -> None:
-    """Wait for App Server to report the registered execution environment ready.
-
-    Codex connects to a newly added exec-server asynchronously. Starting a
-    thread before the environment reaches `ready` can produce a model/tool
-    profile without command-execution tools, so readiness is an evidence
-    prerequisite rather than a timing assumption.
-    """
-    deadline = time.monotonic() + timeout
-    last_status = "unknown"
-    last_error: str | None = None
-    while time.monotonic() < deadline:
-        result = server.request("environment/status", {"environmentId": environment_id}, timeout=3)
-        status = result.get("status")
-        error = result.get("error")
-        last_status = status if isinstance(status, str) else "invalid"
-        last_error = error if isinstance(error, str) else None
-        if last_status == "ready":
-            return
-        if last_status in {"disconnected", "unknown"}:
-            detail = f": {last_error}" if last_error else ""
-            raise CodexAppServerError(f"Codex execution environment is {last_status}{detail}")
-        time.sleep(0.05)
-    detail = f": {last_error}" if last_error else ""
-    raise CodexAppServerError(f"timed out waiting for Codex execution environment readiness (last status {last_status}){detail}")
-
-
-def _start_probe_thread(server: CodexAppServer, root: Path, *, environment_id: str) -> str:
-    """Start a materialized thread in the disposable CODEX_HOME and execution environment."""
+def _start_probe_thread(server: CodexAppServer, root: Path) -> str:
+    """Start a materialized thread using Codex's default auto execution environment."""
     resolved_root = str(root.resolve())
     result = server.request(
         "thread/start",
@@ -134,12 +108,6 @@ def _start_probe_thread(server: CodexAppServer, root: Path, *, environment_id: s
             "sandbox": "read-only",
             "approvalPolicy": "untrusted",
             "approvalsReviewer": "user",
-            "environments": [
-                {
-                    "environmentId": environment_id,
-                    "cwd": resolved_root,
-                }
-            ],
         },
         timeout=20,
     )
@@ -242,6 +210,7 @@ class CodexCLIAdapter(AgentAdapter):
         print(f"4. DENY route B if asked:{ROUTE_B_COMMAND}")
         print(f"5. INTERRUPT pending:    {STOP_COMMAND}")
         print("AgentAck uses Codex's own loopback exec-server plus a deterministic local model stub for the exact synthetic calls.")
+        print("The exec-server is supplied through Codex's native CODEX_EXEC_SERVER_URL auto-environment path.")
         print("All Codex state lives in a temporary CODEX_HOME and is deleted when the test exits.")
         print("Each turn uses read-only + untrusted approval, so the exact marker write must cross Codex's approval boundary.")
         print("AgentAck never sends acceptForSession or a persistent approval rule.\n")
@@ -254,13 +223,11 @@ class CodexCLIAdapter(AgentAdapter):
                 codex_home = Path(home_directory)
                 with DeterministicCodexProvider(commands) as provider:
                     write_codex_probe_config(codex_home, provider_base_url=provider.base_url)
-                    with _temporary_codex_home(codex_home):
-                        with LocalCodexExecServer(status.executable, cwd=root) as exec_server:
+                    with LocalCodexExecServer(status.executable, cwd=root) as exec_server:
+                        with _temporary_codex_environment(codex_home, exec_server.url):
                             with _ExperimentalCodexAppServer(status.executable, cwd=root, agentack_version=__version__) as raw_server:
-                                environment_id = _register_local_environment(raw_server, exec_server.url)
-                                _wait_environment_ready(raw_server, environment_id)
                                 server = _ProbePolicyServer(raw_server, root)
-                                thread_id = _start_probe_thread(server, root, environment_id=environment_id)
+                                thread_id = _start_probe_thread(server, root)
                                 approve = run_probe_turn(
                                     server,
                                     thread_id=thread_id,
