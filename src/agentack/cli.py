@@ -204,7 +204,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     }
     adapter_type = adapters.get(args.agent)
     if adapter_type is None:
-        print(f"agentack: unsupported live adapter {args.agent!r}", file=sys.stderr)
+        print(f"agentack: unsupported adapter test/status target {args.agent!r}", file=sys.stderr)
         return EXIT_INPUT_ERROR
     try:
         result = adapter_type().run_test()
@@ -310,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     coverage = subparsers.add_parser("coverage", help="show truthful ACK rule coverage across traces and live adapters")
     coverage.set_defaults(func=cmd_coverage)
 
-    live_test = subparsers.add_parser("test", help="run a live approval-integrity test against a supported agent")
+    live_test = subparsers.add_parser("test", help="run a supported live test or retained adapter status diagnostic")
     live_test.add_argument("agent", choices=("claude", "codex"))
     live_test.add_argument("--json", dest="json_output")
     live_test.add_argument("--sarif")
