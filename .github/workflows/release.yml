@@ -82,9 +82,44 @@ jobs:
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
+  verify-pypi:
+    name: Verify public PyPI install
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install released package from PyPI
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .pypi-venv
+          for attempt in {1..12}; do
+            if .pypi-venv/bin/python -m pip install \
+              --disable-pip-version-check \
+              --no-cache-dir \
+              --index-url https://pypi.org/simple/ \
+              "agentack==${VERSION}"; then
+              break
+            fi
+            if [[ "${attempt}" -eq 12 ]]; then
+              echo "agentack ${VERSION} was not installable from PyPI." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$(.pypi-venv/bin/agentack --version)" = "agentack ${VERSION}"
+          .pypi-venv/bin/agentack demo
+          .pypi-venv/bin/agentack coverage
+
   github-release:
     name: Create GitHub release
-    needs: [build, publish-pypi]
+    needs: [build, publish-pypi, verify-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
