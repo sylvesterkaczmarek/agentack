@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
+PROBE_MODEL = "gpt-5.5"
+SHELL_TOOL = "shell_command"
 
 
 def _usage() -> dict[str, Any]:
@@ -24,17 +26,15 @@ def _sse(events: Sequence[dict[str, Any]]) -> bytes:
     for event in events:
         event_type = str(event["type"])
         chunks.append(f"event: {event_type}\n")
-        if len(event) > 1:
-            chunks.append("data: " + json.dumps(event, separators=(",", ":")) + "\n\n")
-        else:
-            chunks.append("data: {}\n\n")
+        chunks.append("data: " + json.dumps(event, separators=(",", ":")) + "\n\n")
     return "".join(chunks).encode("utf-8")
 
 
 def _function_call_events(index: int, command: str) -> bytes:
     response_id = f"agentack-response-{index}"
     call_id = f"agentack-shell-{index}"
-    arguments = json.dumps({"command": command}, separators=(",", ":"))
+    # Codex 0.148 approval tests emit shell_command with command + timeout_ms.
+    arguments = json.dumps({"command": command, "timeout_ms": 30_000}, separators=(",", ":"))
     return _sse(
         [
             {"type": "response.created", "response": {"id": response_id}},
@@ -43,7 +43,7 @@ def _function_call_events(index: int, command: str) -> bytes:
                 "item": {
                     "type": "function_call",
                     "call_id": call_id,
-                    "name": "shell_command",
+                    "name": SHELL_TOOL,
                     "arguments": arguments,
                 },
             },
@@ -56,6 +56,7 @@ def _completion_events(index: int) -> bytes:
     response_id = f"agentack-completion-{index}"
     return _sse(
         [
+            {"type": "response.created", "response": {"id": response_id}},
             {
                 "type": "response.output_item.done",
                 "item": {
@@ -76,12 +77,29 @@ def _has_tool_output(payload: Any) -> bool:
     items = payload.get("input")
     if not isinstance(items, list):
         return False
-    for item in items:
-        if not isinstance(item, dict):
+    return any(
+        isinstance(item, dict) and item.get("type") in {"function_call_output", "custom_tool_call_output"}
+        for item in items
+    )
+
+
+def _advertised_tool_names(payload: Any) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return ()
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
             continue
-        if item.get("type") in {"function_call_output", "custom_tool_call_output"}:
-            return True
-    return False
+        name = tool.get("name")
+        if isinstance(name, str):
+            names.add(name)
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.add(function["name"])
+    return tuple(sorted(names))
 
 
 class DeterministicCodexProvider:
@@ -98,6 +116,8 @@ class DeterministicCodexProvider:
         self._next_command = 0
         self._completion_count = 0
         self._error: str | None = None
+        self._observed_model: str | None = None
+        self._observed_tools: tuple[str, ...] = ()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -118,6 +138,13 @@ class DeterministicCodexProvider:
         with self._lock:
             return self._error
 
+    @property
+    def diagnostic(self) -> str:
+        with self._lock:
+            model = self._observed_model or "<missing>"
+            tools = ", ".join(self._observed_tools) if self._observed_tools else "<none>"
+            return f"model={model}; advertised_tools={tools}"
+
     def _record_error(self, detail: str) -> None:
         with self._lock:
             if self._error is None:
@@ -130,7 +157,19 @@ class DeterministicCodexProvider:
                 index = self._completion_count
             return 200, _completion_events(index), "text/event-stream"
 
+        tools = _advertised_tool_names(payload)
+        model = payload.get("model") if isinstance(payload, dict) else None
+        model_text = model if isinstance(model, str) else None
         with self._lock:
+            self._observed_model = model_text
+            self._observed_tools = tools
+            if SHELL_TOOL not in tools:
+                self._error = (
+                    f"installed Codex did not advertise {SHELL_TOOL!r} to the deterministic provider; "
+                    f"model={model_text or '<missing>'}; tools={', '.join(tools) if tools else '<none>'}"
+                )
+                body = json.dumps({"error": {"message": self._error}}).encode("utf-8")
+                return 422, body, "application/json"
             if self._next_command >= len(self._commands):
                 self._error = "Codex requested more model turns than the five deterministic AgentAck probes"
                 body = json.dumps({"error": {"message": self._error}}).encode("utf-8")
@@ -196,9 +235,9 @@ class DeterministicCodexProvider:
 
 
 def write_codex_probe_config(codex_home: Path, *, provider_base_url: str) -> None:
-    """Write an isolated Codex config following Codex's own mock-provider test pattern."""
+    """Write an isolated Codex config following Codex 0.148's own test-provider pattern."""
     codex_home.mkdir(parents=True, exist_ok=True)
-    config = f'''model = "mock-model"
+    config = f'''model = "{PROBE_MODEL}"
 model_provider = "agentack_local"
 approval_policy = "untrusted"
 sandbox_mode = "workspace-write"
