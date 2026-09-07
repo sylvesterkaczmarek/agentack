@@ -79,6 +79,10 @@ def action_identity(action: Action | None) -> ActionIdentity | None:
 def trace_action_identities(events: Iterable[TraceEvent]) -> list[ActionLifecycleIdentity]:
     ordered: list[str] = []
     records: dict[str, dict[str, Any]] = {}
+    requests: dict[str, TraceEvent] = {}
+    decisions: dict[str, TraceEvent] = {}
+    executions: dict[str, TraceEvent] = {}
+    blocks: dict[str, TraceEvent] = {}
     for event in events:
         if not event.action_id:
             continue
@@ -101,14 +105,35 @@ def trace_action_identities(events: Iterable[TraceEvent]) -> list[ActionLifecycl
             current["approval_id"] = event.approval_id
         if event.type == "action_proposed":
             current["expected"] = action_identity(event.action)
-        elif event.type == "approval_requested":
-            current["presented"] = action_identity(event.action)
-        elif event.type == "approval_decision":
-            current["decision"] = event.decision
+        elif event.type == "approval_requested" and event.approval_id:
+            requests.setdefault(event.approval_id, event)
+        elif event.type == "approval_decision" and event.approval_id:
+            decisions.setdefault(event.approval_id, event)
         elif event.type == "action_executed":
-            current["executed"] = action_identity(event.action)
+            executions.setdefault(event.action_id, event)
         elif event.type == "action_blocked":
             current["blocked"] = True
+            blocks.setdefault(event.action_id, event)
+
+    for action_id, current in records.items():
+        execution = executions.get(action_id)
+        terminal = execution or blocks.get(action_id)
+        if terminal is not None:
+            # An omitted terminal reference is missing evidence, even if another
+            # event for this action happens to name an approval.
+            current["approval_id"] = terminal.approval_id
+        if execution is not None:
+            current["executed"] = action_identity(execution.action)
+        approval_id = current["approval_id"]
+        if approval_id is not None:
+            # Match the evaluator's first-record handling of duplicate IDs and
+            # never combine approvals belonging to different actions.
+            request = requests.get(approval_id)
+            decision = decisions.get(approval_id)
+            if request is not None and request.action_id == action_id:
+                current["presented"] = action_identity(request.action)
+            if decision is not None and decision.action_id == action_id:
+                current["decision"] = decision.decision
     return [ActionLifecycleIdentity(**records[action_id]) for action_id in ordered]
 
 

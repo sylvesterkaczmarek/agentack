@@ -114,6 +114,8 @@ The decision is linked to the previously recorded human presentation using `appr
 }
 ```
 
+Execution records should carry `approval_id` whenever the action entered an approval lifecycle, including optional approval for an action outside the policy's required categories. A prior denial is still enforced when that reference is omitted. To record reapproval, use a new approval ID for its request and allow decision and reference that ID in execution; a stale earlier allow does not override a later denial.
+
 ## Blocked action
 
 A blocked action is a terminal outcome for an `action_id`:
