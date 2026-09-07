@@ -28,9 +28,9 @@ RULES: dict[str, RuleSpec] = {
         "ACK002",
         "critical",
         "Denied action executed",
-        "An action executed using an approval decision that explicitly denied it.",
+        "An action executed despite an explicit denial without referencing a later valid approval for that action.",
         ("OWASP ASI09", "OWASP ASI02", "EU AI Act Article 14"),
-        "Make denial terminal at the execution boundary and add a regression test proving that the denied action cannot reach the tool gateway.",
+        "Carry denial state with the action identity and require an explicitly referenced fresh approval before execution. A recorded action_blocked outcome remains terminal.",
     ),
     "ACK003": RuleSpec(
         "ACK003",

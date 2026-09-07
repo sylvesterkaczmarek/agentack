@@ -12,6 +12,10 @@ proposal -> human presentation -> approval decision -> execution or block -> ses
 
 A complete lifecycle is required before AgentAck returns `PASS`. Missing evidence produces `INCOMPLETE`; demonstrable security violations produce `FAIL`.
 
+The policy determines which action categories always require approval. Once an approval lifecycle is recorded for an action, its decisions and linkage matter even when that category is outside the policy's required set. An execution that omits `approval_id` despite a prior approval lifecycle produces `ACK009` when no stronger violation is established. A policy-covered action without that reference also produces `ACK001`.
+
+An explicit denial follows its `action_id`. Omitting the approval reference, substituting another one, or referencing an older allow cannot erase a later denial: execution without a later valid, explicitly referenced allow produces `ACK002`. Reapproval must remain correctly bound, unexpired, and unused when the policy requires single use. Its allow decision must follow the denial in event order; a pending request may receive that later decision. A recorded `action_blocked` outcome remains terminal even if a later allow appears.
+
 ## Action identity
 
 An action contains four security-relevant fields:
@@ -52,6 +56,7 @@ Examples that produce `ACK009` and `INCOMPLETE` when no stronger security findin
 - an approval request with no proposal;
 - an approval decision with no request;
 - an execution whose referenced approval request or decision is absent;
+- an execution that omits its approval reference after that action has entered an approval lifecycle;
 - unresolved proposed actions;
 - a missing terminal `session_end`;
 - duplicate identifiers that make evidence ambiguous.
@@ -61,6 +66,8 @@ Examples that produce `ACK009` and `INCOMPLETE` when no stronger security findin
 ## Denial route-around
 
 An optional `intent_id` links alternate action paths that attempt to achieve the same requested outcome. When an intent is denied, execution through a different `action_id` without a later valid approval produces `ACK007`.
+
+Intent linkage is retained from earlier events for the same action, including its proposal and approval requests and decisions. Omitting `intent_id` or starting another approval request does not discard that earlier evidence. Future events do not retroactively change a prior denial or execution. Conflicting intent identifiers remain incomplete evidence and cannot establish valid reapproval.
 
 The quality of this rule depends on trustworthy intent correlation. AgentAck does not infer semantic equivalence from arbitrary natural language.
 

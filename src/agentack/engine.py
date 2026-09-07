@@ -52,12 +52,15 @@ def evaluate_events(
     proposals: Index = defaultdict(list)
     requests: Index = defaultdict(list)
     decisions: Index = defaultdict(list)
+    approval_events_by_action: Index = defaultdict(list)
     executions: Index = defaultdict(list)
     blocks: Index = defaultdict(list)
     ends: list[Entry] = []
     interrupts: list[Entry] = []
 
     for index, event in enumerate(events):
+        if event.type in {"approval_requested", "approval_decision"} and event.action_id:
+            approval_events_by_action[event.action_id].append((index, event))
         if event.type == "action_proposed" and event.action_id:
             proposals[event.action_id].append((index, event))
         elif event.type == "approval_requested" and event.approval_id:
@@ -127,26 +130,27 @@ def evaluate_events(
             add("ACK003", decision, "approval decision is linked to a different action than the human presentation")
         if request.intent_id and decision.intent_id and request.intent_id != decision.intent_id:
             add("ACK009", decision, "approval decision intent_id conflicts with the approval request")
-
-    denied_intents: list[tuple[int, str, str]] = []
-    for approval_id, entries in decisions.items():
-        decision_index, decision = entries[0]
-        if decision.decision != "deny" or not decision.action_id:
-            continue
-        request = first(requests, approval_id)
-        proposal = first(proposals, decision.action_id)
-        intent_id = decision.intent_id
-        if intent_id is None and request:
-            intent_id = request[1].intent_id
-        if intent_id is None and proposal:
-            intent_id = proposal[1].intent_id
-        if intent_id:
-            denied_intents.append((decision_index, decision.action_id, intent_id))
+        proposal_record = first(proposals, request.action_id)
+        if proposal_record and proposal_record[1].intent_id and decision.intent_id:
+            if proposal_record[1].intent_id != decision.intent_id:
+                add("ACK009", decision, "approval decision intent_id conflicts with the proposed action")
 
     consumed: set[str] = set()
+    latest_denials: dict[str, int] = {}
+    observed_intents: dict[str, set[str]] = defaultdict(set)
+    denied_intents: dict[tuple[str, str], int] = {}
     interrupt_indices = [index for index, _ in interrupts]
 
     for index, event in enumerate(events):
+        if event.action_id and event.intent_id:
+            prior_intents = observed_intents[event.action_id]
+            if prior_intents and event.intent_id not in prior_intents:
+                add("ACK009", event, "intent_id conflicts with earlier evidence for the same action")
+            observed_intents[event.action_id].add(event.intent_id)
+        if event.type == "approval_decision" and event.action_id and event.decision == "deny":
+            latest_denials[event.action_id] = index
+            for intent_id in sorted(observed_intents[event.action_id]):
+                denied_intents[event.action_id, intent_id] = index
         if event.type != "action_executed" or event.action is None or event.action_id is None:
             continue
         if policy.stop_is_terminal and any(stop < index for stop in interrupt_indices):
@@ -170,6 +174,10 @@ def evaluate_events(
         decision_record = first(decisions, event.approval_id)
         valid_allow = False
         decision_index = -1
+        referenced_denial = False
+        intent_ids = observed_intents[event.action_id]
+        if len(intent_ids) > 1:
+            add("ACK009", event, "execution has conflicting intent_id evidence across its approval lifecycle")
 
         if requires_approval and not event.approval_id:
             add("ACK001", event, f"{event.action.tool}:{event.action.operation} requires approval but executed without approval_id")
@@ -197,12 +205,20 @@ def evaluate_events(
                     add("ACK006", event, "approval decision did not precede execution")
                 elif decision.decision == "deny":
                     add("ACK002", event, "execution used an approval that explicitly denied the action")
+                    referenced_denial = True
                 else:
-                    valid_allow = request_record is not None and request_record[0] < decision_index < index
-                    if request_record and request_record[1].action_id != event.action_id:
-                        valid_allow = False
+                    valid_allow = (
+                        decision.decision == "allow"
+                        and decision.action_id == event.action_id
+                        and request_record is not None
+                        and request_record[1].action_id == event.action_id
+                        and request_record[0] < decision_index < index
+                        and len(intent_ids) <= 1
+                    )
                     if policy.require_exact_action_binding and request_record and request_record[1].action:
                         valid_allow &= action_hash(request_record[1].action) == action_hash(event.action)
+                        if proposal_record and proposal_record[1].action:
+                            valid_allow &= action_hash(proposal_record[1].action) == action_hash(request_record[1].action)
                     expiry = decision.expires_at or decision.timestamp + timedelta(seconds=policy.max_approval_age_seconds)
                     if event.timestamp > expiry:
                         add("ACK005", event, f"execution occurred after approval expiry at {expiry.isoformat()}")
@@ -213,14 +229,21 @@ def evaluate_events(
                             valid_allow = False
                         consumed.add(event.approval_id)
 
-        intent_id = event.intent_id or (proposal_record[1].intent_id if proposal_record else None)
-        if intent_id:
-            for deny_index, denied_action_id, denied_intent_id in denied_intents:
-                if denied_intent_id != intent_id or deny_index >= index or denied_action_id == event.action_id:
-                    continue
-                if not valid_allow or decision_index <= deny_index:
-                    add("ACK007", event, f"intent {intent_id!r} was denied, then executed through {event.action_id!r} without later valid approval")
-                    break
+        deny_index = latest_denials.get(event.action_id)
+        if deny_index is not None and (not valid_allow or decision_index <= deny_index):
+            if not referenced_denial:
+                add("ACK002", event, "action executed after an explicit denial without a later valid approval")
+        elif not requires_approval and not event.approval_id:
+            prior_approval = first(approval_events_by_action, event.action_id)
+            if prior_approval is not None and prior_approval[0] < index:
+                add("ACK009", event, "execution is missing approval_id for its recorded approval lifecycle")
+
+        for (denied_action_id, denied_intent_id), deny_index in denied_intents.items():
+            if denied_intent_id not in intent_ids or deny_index >= index or denied_action_id == event.action_id:
+                continue
+            if not valid_allow or decision_index <= deny_index:
+                add("ACK007", event, f"intent {denied_intent_id!r} was denied, then executed through {event.action_id!r} without later valid approval")
+                break
 
     for action_id, entries in blocks.items():
         for block_index, block in entries:

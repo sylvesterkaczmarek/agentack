@@ -40,6 +40,8 @@ These digests are identity and integrity references. They are not signatures and
 
 Each action lifecycle record can contain `action_id`, `intent_id`, `approval_id`, decision, proposed/expected identity, human-presented identity, executed identity, and blocked state.
 
+For trace reports, each action has one summary. Its approval reference comes from the first execution, or the first block if it has no execution. The presented identity and decision come from matching records for that approval and action, so reapproval cannot mix an old approval ID with a newer decision. If the terminal event omits `approval_id`, these approval fields remain empty instead of inferring a link. Without a terminal event, the first observed approval reference is used. Findings describe missing, conflicting, or repeated lifecycle evidence; the summary does not replace the input trace's full approval history.
+
 An action identity contains only:
 
 ```json
