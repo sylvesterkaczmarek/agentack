@@ -10,32 +10,44 @@
 
 AgentAck is a local-first CLI and Python library for checking whether executed actions remain bound to human approval, whether denials are respected, and whether required evidence is complete. Its deterministic core has no third-party runtime dependencies and does not execute the actions described in a trace.
 
-## Current development version
+## Version 0.7
 
-This branch prepares **0.7.0rc1**, an unreleased reliability update reviewed on 4 November 2026. It corrects false passes in Claude capture analysis, applies the same validation contract to files and Python callers, and separates broad policy categories from exact execution identity. The currently published PyPI release is 0.6.3 and does not contain these changes.
+Version **0.7.0** strengthens approval-evidence validation and exact action identity. It includes the September denial-handling fixes that were absent from the published 0.6.3 package, and all three corrections identified during the independent review of the 0.7 candidate.
 
-Use [the migration notes](docs/migration-0.7.md), [changelog](CHANGELOG.md), and [verification guide](docs/release-candidate.md) when reviewing this candidate. Fresh supervised Claude validation remains pending. Synthetic regression results are software tests, not evidence of production-agent safety or effects on human behaviour.
+Read [the migration notes](docs/migration-0.7.md) before upgrading integrations. Action fingerprints, reports and Claude capture have versioned semantics. See [release verification](docs/release-0.7.0.md) and [the changelog](CHANGELOG.md) for the changes and checks.
 
-## Try the candidate
+The deterministic checker is verified against synthetic test cases. The optional Claude live probe is **experimental and awaits fresh supervised validation**. Codex remains detection/trace-only. Neither fixture results nor CLI preflight establish production-agent safety or effects on human behaviour.
 
-From this checkout:
+## Install and try
+
+Install the command-line tool in an isolated environment:
+
+```bash
+pipx install agentack==0.7.0
+```
+
+Or install the Python package:
+
+```bash
+python -m pip install agentack==0.7.0
+```
+
+Then run the account-free demonstration:
+
+```bash
+agentack demo
+agentack coverage
+```
+
+These commands inspect synthetic evidence and do not execute the actions it describes. `agentack demo` includes a valid approval and an action changed after approval.
+
+For development and the complete regression suite:
 
 ```bash
 python -m venv .venv
 # Activate .venv using your operating system's normal command.
 python -m pip install -e '.[dev]'
-agentack demo
-agentack coverage
-python scripts/verify_corpus.py
-```
-
-The account-free demonstration includes a valid approval and an action changed after approval. These commands only inspect synthetic evidence.
-
-The existing published package can still be installed with either command below. It remains 0.6.3 until a new release is explicitly approved and published:
-
-```bash
-pipx install agentack
-python -m pip install agentack
+make check
 ```
 
 ## What it checks
@@ -73,9 +85,9 @@ Exit codes are 0 for PASS, 1 for FAIL, 2 for invalid input/output, and 3 for INC
 
 ## Integrations
 
-| Agent | Detection | Live test | Candidate status |
+| Agent | Detection | Live test | Status |
 | --- | --- | --- | --- |
-| Claude Code | yes | supervised probe | version/flag preflight plus human prompts; fresh live validation pending |
+| Claude Code | yes | experimental supervised probe | version/flag preflight plus human prompts; fresh live validation pending |
 | Codex CLI | yes | no | offline protocol research and regression fixtures; no verified live boundary |
 | Gemini CLI | yes | no | detection only |
 | Cursor CLI | yes | no | detection only |
@@ -88,7 +100,7 @@ A human can explicitly run the Claude probe from an interactive terminal:
 agentack test claude --json claude-result.json --sarif claude-result.sarif
 ```
 
-AgentAck asks the person to approve or deny four harmless commands through Claude's native prompts. It never answers them on the person's behalf. Hooks capture native tool and hashed working-directory context. Decision telemetry must match the session and tool invocation. Every probe is checked through its decision and terminal outcome; a prompt alone is insufficient.
+AgentAck asks the person to approve or deny four harmless commands through Claude's native prompts. It never answers them on the person's behalf. Hooks capture native tool and hashed working-directory context. Decision telemetry must match the session and tool invocation. Every probe is checked through its decision and terminal outcome; a prompt alone is insufficient. Contradictory or malformed telemetry is rejected. A correctly matched rejection followed by successful or failed tool execution is a violation.
 
 `agentack coverage` distinguishes deterministic **TESTED** cases, implemented live **PROBE** paths, evidence **GUARDED** paths, **TRACE**-only coverage and unsupported **SKIP** paths. It is a capability map, not a claim that a particular installed version has passed.
 
@@ -113,13 +125,13 @@ Broad policy aliases such as `Bash` to `shell` apply to policy matching. Identit
 ```bash
 make check
 make release-check
-python scripts/verify_wheel.py dist/agentack-0.7.0rc1-py3-none-any.whl
+python scripts/verify_wheel.py dist/agentack-0.7.0-py3-none-any.whl
 python scripts/showcase.py --output ./agentack-showcase
 ```
 
-The suite includes named reproductions of the review findings, all 120 permutations of a five-event lifecycle, and seeded action substitutions paired with valid controls. The named corpus reports false passes, false failures and expected incomplete classifications. Every fixture is labelled synthetic.
+The 237-test suite includes named reproductions of the review findings, all 120 permutations of a five-event lifecycle, and seeded action substitutions paired with valid controls. The named corpus reports false passes, false failures and expected incomplete classifications. Every fixture is labelled synthetic.
 
-The release workflow requires the complete CI workflow on the exact release commit before building or publishing. Release candidates cannot be published by that workflow. Merging, choosing a final version, supervised live validation and publication remain separate review decisions.
+The release workflow requires the complete CI workflow on the exact release commit before building or publishing. Release candidates cannot be published by that workflow. Publication follows verification of the exact commit. Fresh supervised live-agent validation is a separate integration qualification and is not claimed by this release.
 
 ## Scope and security
 

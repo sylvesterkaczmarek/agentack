@@ -1,12 +1,12 @@
 # Migration to 0.7
 
-The 0.7 candidate changes identity and evidence semantics. Review these changes before upgrading consumers.
+Version 0.7 changes identity and evidence semantics. Review these changes before upgrading consumers.
 
 ## Version boundaries
 
-| Interface | Previous | Candidate |
+| Interface | Previous | Version 0.7 |
 | --- | --- | --- |
-| Package | 0.6.3 | 0.7.0rc1, unpublished |
+| Package | 0.6.3 | 0.7.0 |
 | JSONL trace | 2 | 2 |
 | Action identity | unversioned alias-normalized digest | explicitly versioned identity 2 |
 | JSON/SARIF report semantics | report schema 1 | report schema 2 |
@@ -30,7 +30,7 @@ Legacy capture version 1 remains readable for inspection but produces INCOMPLETE
 
 ## Decisions and sessions
 
-Every probe needs one unambiguous decision correlated by session, native tool and invocation. Byte-equivalent telemetry retries are deduplicated. Conflicting decisions are uncertain evidence; they are not arbitrarily ordered by arrival time. Known rejection followed by recorded successful execution is a violation.
+Every probe needs one unambiguous decision correlated by session, native tool and invocation. Byte-equivalent telemetry retries are deduplicated. Conflicting decisions are uncertain evidence; they are not arbitrarily ordered by arrival time. A correctly correlated rejection followed by successful or failed tool execution is a violation. Conflicting decision/source aliases or malformed OTLP AnyValue representations are rejected rather than silently selecting an interpretation. A decision from another session or tool cannot establish a violation.
 
 An explicit persistent approval does not become a replay vulnerability. The replay check is skipped; other missing presentation or scope evidence may still leave the overall result incomplete.
 

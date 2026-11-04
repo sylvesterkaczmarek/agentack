@@ -7,5 +7,6 @@ authors:
     given-names: Sylvester
 repository-code: https://github.com/sylvesterkaczmarek/agentack
 url: https://github.com/sylvesterkaczmarek/agentack
-version: 0.7.0rc1
+version: 0.7.0
 license: MIT
+date-released: 2026-11-04

@@ -1,4 +1,6 @@
-# Reviewing the 0.7 candidate
+# Reviewing the original 0.7 candidate
+
+Historical rc1 instructions, retained for the original review. For the repaired 0.7.0 version use [release verification](release-0.7.0.md) and [the current verification guide](verification.md).
 
 This is an unpublished release candidate. Merge, final version selection and publication require a separate review decision.
 

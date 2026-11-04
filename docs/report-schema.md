@@ -12,7 +12,7 @@ Current report schema version: `1`.
   "action_identity_version": 2,
   "producer": {
     "name": "AgentAck",
-    "version": "0.7.0rc1"
+    "version": "0.7.0"
   },
   "run": {
     "run_id": "UUID",

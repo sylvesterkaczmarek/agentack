@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+Release prepared on 2026-11-04.
+
+### Independent-review corrections
+
+- R1: validate OTLP typed-value shapes and reject contradictory decision/source aliases. Retain matching aliases, valid nested metadata and identical exporter retries.
+- R2: require session, tool and invocation correlation before attributing decisions or execution. Unrelated evidence remains incomplete and cannot fabricate a violation; independently established violations are retained.
+- R3: treat both successful and failed tool execution after a matched rejection as ACK002. An approved tool failure remains a separate incomplete control path.
+- Add 32 regression tests covering the findings and adjacent positive/negative controls. All 32 independently authored semantic probes and 37 malformed-input checks pass after repair.
+- Finalize identity-2 and report-schema-2 migration guidance and public installation examples. Keep the Claude live probe experimental pending fresh supervised validation.
+
+See [release verification](docs/release-0.7.0.md). The rc1 entry below records the earlier implementation state.
+
 ## 0.7.0rc1
 
 Unreleased candidate prepared on 4 November 2026.
@@ -33,4 +47,4 @@ No GitHub release or PyPI publication is implied by this candidate entry.
 
 ## 0.6.3
 
-Published on 19 August 2026. The subsequent main-branch denial-authority and attribution corrections from 7 September were not included in the published 0.6.3 wheel. This candidate includes those source changes.
+Published on 19 August 2026. The subsequent main-branch denial-authority and attribution corrections from 7 September were not included in the published 0.6.3 wheel. Version 0.7.0 includes those source changes.

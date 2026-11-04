@@ -35,3 +35,11 @@ Persistent approval is not classified as an approval-replay vulnerability. The r
 A result covers only the observed synthetic paths on the recorded agent version. It does not prove broad agent safety, human comprehension, trustworthy capture by a compromised emitter or production compatibility. Record the exact commit, CLI version, platform and settings with each supervised run.
 
 Official contracts: https://code.claude.com/docs/en/hooks and https://code.claude.com/docs/en/monitoring-usage.
+
+## Review corrections in 0.7.0
+
+Decision telemetry is parsed as a typed OTLP value, with conflicting compatibility aliases rejected. Semantic attribution requires the session, native tool and invocation to match. Both `PostToolUse` and `PostToolUseFailure` establish that the tool reached execution; a matched rejection followed by either is ACK002. An accepted tool that fails is not reported as a denial bypass.
+
+The documented failure hook excludes calls rejected by permissions before execution. A failure event does not establish that the command completed successfully or produced any particular side effect.
+
+References: [Claude hook contract](https://code.claude.com/docs/en/hooks#posttoolusefailure), [OTLP JSON encoding](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding), and [AnyValue schema](https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/common/v1/common.proto).
