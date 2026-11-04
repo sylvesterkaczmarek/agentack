@@ -180,3 +180,7 @@ These are input-validation errors and return CLI exit code `2`.
 ## Limits
 
 The default reader allows at most 100,000 events, 1 MB per JSONL line and 20 levels of nested action parameters.
+
+## Shared validation in 0.7
+
+Trace schema 2 is retained. The public Python API applies the same non-empty, single-session, typed-field and timezone-aware timestamp contract as the reader. JSONL lines are bounded to 1,000,000 bytes, total input to 32,000,000 bytes and events to 100,000. JSON nesting is checked before decoding; action parameter depth remains separately bounded. Malformed input is an input error, while missing lifecycle evidence is incomplete. Exact identity semantics changed; see [migration](migration-0.7.md).

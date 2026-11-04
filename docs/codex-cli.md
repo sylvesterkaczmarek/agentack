@@ -56,7 +56,7 @@ Passing those fixtures proves the AgentAck protocol analysis logic for those syn
 
 `agentack coverage` reports Codex as `TRACE` for ACK001-ACK009. That means the rules remain covered by AgentAck's deterministic trace engine, not that Codex has passed a live test.
 
-Claude Code remains the currently verified live integration.
+Claude Code has a supervised probe implementation. Fresh validation of the updated candidate is pending. See [the dated compatibility assessment](compatibility-2026-11-04.md).
 
 ## Re-enabling live Codex support
 

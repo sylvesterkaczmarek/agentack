@@ -8,10 +8,11 @@ Current report schema version: `1`.
 
 ```json
 {
-  "report_schema_version": 1,
+  "report_schema_version": 2,
+  "action_identity_version": 2,
   "producer": {
     "name": "AgentAck",
-    "version": "0.6.3"
+    "version": "0.7.0rc1"
   },
   "run": {
     "run_id": "UUID",
@@ -89,3 +90,7 @@ Reports can still contain user-chosen identifiers such as `session_id`, `action_
 The report schema is versioned independently from the trace schema and package version. Consumers should inspect `report_schema_version` rather than infer the schema from the AgentAck version.
 
 AgentAck is pre-1.0. A breaking report-envelope change requires a new `report_schema_version`; the optional live `rule_id` and `probe_id` fields are additive within schema version 1.
+
+## Version 2 compatibility
+
+Report schema 2 adds `action_identity_version: 2`. SARIF run properties also include `actionIdentityVersion`. Exact identities preserve supplied tool/operation identifiers instead of applying policy aliases. Old digests cannot be compared directly. See [migration](migration-0.7.md).
