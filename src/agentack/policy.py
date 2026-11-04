@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,16 @@ class Policy:
     require_exact_action_binding: bool = True
     stop_is_terminal: bool = True
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.require_approval_for, tuple) or not all(
+            isinstance(item, str) and item.strip() and item == item.strip() for item in self.require_approval_for
+        ):
+            raise ValueError("require_approval_for must be a tuple of non-empty strings")
+        if type(self.max_approval_age_seconds) is not int or not 1 <= self.max_approval_age_seconds <= 86400:
+            raise ValueError("max_approval_age_seconds must be from 1 to 86400")
+        if not all(type(value) is bool for value in (self.approval_single_use, self.require_exact_action_binding, self.stop_is_terminal)):
+            raise ValueError("policy switches must be booleans")
+
     def requires_approval(self, action: Action) -> bool:
         key = canonical_action_key(action)
         return any(fnmatch.fnmatchcase(key, pattern.lower()) for pattern in self.require_approval_for)
@@ -36,11 +47,15 @@ class Policy:
     def from_toml(cls, path: str | Path) -> "Policy":
         with Path(path).open("rb") as handle:
             data = tomllib.load(handle)
-        if data.get("version") != 1:
+        if set(data) - {"version", "approval"}:
+            raise ValueError("policy contains unknown top-level fields")
+        if type(data.get("version")) is not int or data.get("version") != 1:
             raise ValueError("policy version must be 1")
         approval = data.get("approval", {})
         if not isinstance(approval, dict):
             raise ValueError("[approval] must be a TOML table")
+        if set(approval) - {"require_for", "max_age_seconds", "single_use", "exact_action_binding", "stop_is_terminal"}:
+            raise ValueError("approval policy contains unknown fields")
         patterns = approval.get("require_for", list(DEFAULT_PATTERNS))
         if not isinstance(patterns, list) or not all(isinstance(item, str) and item for item in patterns):
             raise ValueError("approval.require_for must be a list of non-empty strings")
@@ -66,7 +81,7 @@ class Policy:
         )
 
     def to_toml(self) -> str:
-        patterns = ",\n  ".join(f'"{item}"' for item in self.require_approval_for)
+        patterns = ",\n  ".join(json.dumps(item) for item in self.require_approval_for)
         return (
             "version = 1\n\n"
             "[approval]\n"

@@ -82,11 +82,11 @@ def cmd_check(args: argparse.Namespace) -> int:
     try:
         policy = _policy(args.policy)
         events, trace_sha256 = read_jsonl_with_digest(args.trace)
+        report = evaluate_events(events, policy=policy, source=str(Path(args.trace)))
     except (OSError, ValueError, TraceValidationError) as exc:
         print(f"agentack: input error: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
 
-    report = evaluate_events(events, policy=policy, source=str(Path(args.trace)))
     document = trace_report_payload(
         report,
         events,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
 
 from .canonical import action_hash
 from .findings import RULES
-from .models import EvaluationReport, Finding, TraceEvent
+from .models import EvaluationReport, Finding, TraceEvent, TraceValidationError
 from .policy import Policy
+from .validation import validate_events
 
 Entry: TypeAlias = tuple[int, TraceEvent]
 Index: TypeAlias = dict[str, list[Entry]]
@@ -39,6 +40,9 @@ def evaluate_events(
     policy: Policy | None = None,
     source: str | None = None,
 ) -> EvaluationReport:
+    events = validate_events(events)
+    if policy is not None and not isinstance(policy, Policy):
+        raise TraceValidationError("policy must be a Policy instance")
     policy = policy or Policy()
     findings: list[Finding] = []
     emitted: set[tuple[str, int | None, str]] = set()
@@ -48,6 +52,10 @@ def evaluate_events(
         if key not in emitted:
             emitted.add(key)
             findings.append(_finding(rule_id, event, message))
+
+    for previous, current in zip(events, events[1:]):
+        if current.timestamp < previous.timestamp:
+            add("ACK009", current, "timestamps regress; approval-age evidence is not reliable")
 
     proposals: Index = defaultdict(list)
     requests: Index = defaultdict(list)
@@ -219,7 +227,13 @@ def evaluate_events(
                         valid_allow &= action_hash(request_record[1].action) == action_hash(event.action)
                         if proposal_record and proposal_record[1].action:
                             valid_allow &= action_hash(proposal_record[1].action) == action_hash(request_record[1].action)
-                    expiry = decision.expires_at or decision.timestamp + timedelta(seconds=policy.max_approval_age_seconds)
+                    if event.timestamp < decision.timestamp:
+                        add("ACK009", event, "execution timestamp predates its approval decision")
+                        valid_allow = False
+                    try:
+                        expiry = decision.expires_at or decision.timestamp + timedelta(seconds=policy.max_approval_age_seconds)
+                    except OverflowError:
+                        expiry = datetime.max.replace(tzinfo=timezone.utc)
                     if event.timestamp > expiry:
                         add("ACK005", event, f"execution occurred after approval expiry at {expiry.isoformat()}")
                         valid_allow = False

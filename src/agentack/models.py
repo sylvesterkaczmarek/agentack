@@ -34,13 +34,22 @@ def _parse_datetime(value: object, field_name: str) -> datetime:
         raise TraceValidationError(f"{field_name} is not valid ISO-8601") from exc
     if parsed.tzinfo is None:
         raise TraceValidationError(f"{field_name} must include a timezone")
-    return parsed.astimezone(timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise TraceValidationError(f"{field_name} is outside the supported datetime range") from exc
 
 
 def _validate_json_value(value: Any, *, depth: int = 0) -> None:
     if depth > 20:
         raise TraceValidationError("action parameters exceed maximum nesting depth")
-    if value is None or isinstance(value, (str, bool, int)):
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise TraceValidationError("JSON strings must contain valid Unicode scalar values") from exc
+        return
+    if value is None or isinstance(value, (bool, int)):
         return
     if isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -54,12 +63,15 @@ def _validate_json_value(value: Any, *, depth: int = 0) -> None:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TraceValidationError("action parameter keys must be strings")
+            _validate_json_value(key, depth=depth + 1)
             _validate_json_value(item, depth=depth + 1)
         return
     raise TraceValidationError(f"unsupported action parameter type: {type(value).__name__}")
 
 
 def _reject_unknown_fields(data: dict[str, Any], allowed: set[str], *, context: str) -> None:
+    if not all(isinstance(key, str) for key in data):
+        raise TraceValidationError(f"{context} field names must be strings")
     unknown = sorted(set(data) - allowed)
     if unknown:
         raise TraceValidationError(f"{context} contains unknown field(s): {', '.join(unknown)}")
@@ -93,10 +105,13 @@ class Action:
             raise TraceValidationError("action.resource must be a string or null")
         if not isinstance(parameters, dict):
             raise TraceValidationError("action.parameters must be an object")
+        _validate_json_value(tool)
+        _validate_json_value(operation)
+        _validate_json_value(resource)
         _validate_json_value(parameters)
         return cls(
-            tool=tool.strip(),
-            operation=operation.strip(),
+            tool=tool,
+            operation=operation,
             resource=resource,
             parameters=parameters,
         )
@@ -188,13 +203,13 @@ class TraceEvent:
             raise TraceValidationError("trace event must be an object")
 
         schema_version = data.get("schema_version")
-        if schema_version != TRACE_SCHEMA_VERSION:
+        if type(schema_version) is not int or schema_version != TRACE_SCHEMA_VERSION:
             raise TraceValidationError(
                 f"schema_version must be {TRACE_SCHEMA_VERSION}; got {schema_version!r}"
             )
 
         event_type = data.get("type")
-        if event_type not in _EVENT_FIELDS:
+        if not isinstance(event_type, str) or event_type not in _EVENT_FIELDS:
             raise TraceValidationError(f"unsupported event type: {event_type!r}")
         _reject_unknown_fields(data, _EVENT_FIELDS[event_type], context=str(event_type))
 
@@ -213,13 +228,16 @@ class TraceEvent:
         action_data = data.get("action")
         action = Action.from_dict(action_data) if action_data is not None else None
         decision = data.get("decision")
-        if decision is not None and decision not in {"allow", "deny"}:
+        if decision is not None and (not isinstance(decision, str) or decision not in {"allow", "deny"}):
             raise TraceValidationError("decision must be 'allow' or 'deny'")
         expires_at_raw = data.get("expires_at")
         expires_at = _parse_datetime(expires_at_raw, "expires_at") if expires_at_raw is not None else None
         reason = data.get("reason")
         if reason is not None and not isinstance(reason, str):
             raise TraceValidationError("reason must be a string or null")
+
+        for text in (session_id, action_id, intent_id, approval_id, reason):
+            _validate_json_value(text)
 
         if event_type in {"action_proposed", "approval_requested", "action_executed"}:
             if action_id is None or action is None:
@@ -234,7 +252,7 @@ class TraceEvent:
         return cls(
             type=event_type,  # type: ignore[arg-type]
             timestamp=timestamp,
-            session_id=session_id.strip(),
+            session_id=session_id,
             action_id=action_id,
             intent_id=intent_id,
             approval_id=approval_id,

@@ -201,7 +201,7 @@ class ProvenanceTests(unittest.TestCase):
             run_id="run-123",
             evaluated_at="2026-08-18T16:00:00Z",
         )
-        self.assertEqual(document["report_schema_version"], 1)
+        self.assertEqual(document["report_schema_version"], 2)
         self.assertEqual(document["producer"]["name"], "AgentAck")
         self.assertEqual(document["run"]["run_id"], "run-123")
         self.assertEqual(document["run"]["session_id"], events[0].session_id)

@@ -21,7 +21,7 @@ from agentack.adapters.otel import LocalOtelCollector, ToolDecision, extract_too
 
 def hook_record(event: str, command: str | None = None, *, tool_use_id: str | None = None):
     payload = {
-        "capture_version": 1,
+        "capture_version": 2,
         "event": event,
         "observed_at": "2026-01-01T00:00:00Z",
         "session_id": "s",
@@ -31,7 +31,7 @@ def hook_record(event: str, command: str | None = None, *, tool_use_id: str | No
             "tool": "shell",
             "operation": "run",
             "resource": "workspace",
-            "parameters": {"command": command},
+            "parameters": {"command": command, "_agentack_execution_context": {"native_tool": "Bash", "cwd_sha256": "a" * 64}},
         }
         payload["tool_name"] = "Bash"
         payload["tool_use_id"] = tool_use_id
@@ -60,10 +60,10 @@ def complete_capture(*, route_a_post: bool = False, replay_permission: bool = Tr
         records.append(hook_record("PermissionRequest", ROUTE_B_COMMAND))
     records.append(hook_record("SessionEnd"))
     decisions = [
-        ToolDecision("tool-approve", "Bash", "accept", "user_temporary"),
-        ToolDecision("tool-replay", "Bash", "reject", "user_reject"),
-        ToolDecision("tool-route-a", "Bash", "reject", "user_reject"),
-        ToolDecision("tool-route-b", "Bash", "reject", "user_reject"),
+        ToolDecision("tool-approve", "Bash", "accept", "user_temporary", session_id="s"),
+        ToolDecision("tool-replay", "Bash", "reject", "user_reject", session_id="s"),
+        ToolDecision("tool-route-a", "Bash", "reject", "user_reject", session_id="s"),
+        ToolDecision("tool-route-b", "Bash", "reject", "user_reject", session_id="s"),
     ]
     return records, decisions
 
@@ -129,7 +129,7 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_persistent_user_approval_is_not_mislabeled_as_replay_vulnerability(self):
         records, decisions = complete_capture(replay_permission=False)
-        decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "user_permanent")
+        decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "user_permanent", session_id="s")
         result = analyze_capture(records, decisions)
         statuses = {check.label: check.status for check in result.checks}
         self.assertEqual(statuses["Approval replay"], "SKIP")
@@ -161,10 +161,8 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_malformed_or_lost_decision_telemetry_is_incomplete(self):
         records, _decisions = complete_capture()
         malformed_payload = {"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"stringValue": "claude_code.tool_decision"}, "attributes": []}]}]}]}
-        decisions = extract_tool_decisions([malformed_payload])
-        result = analyze_capture(records, decisions)
-        self.assertEqual(result.status, "INCOMPLETE")
-        self.assertEqual({check.label: check.status for check in result.checks}["Evidence completeness"], "INCOMPLETE")
+        with self.assertRaises(ValueError):
+            extract_tool_decisions([malformed_payload])
 
     def test_action_change_across_hooks_fails(self):
         records, decisions = complete_capture()
@@ -178,7 +176,7 @@ class ClaudeAdapterTests(unittest.TestCase):
 
     def test_nonhuman_baseline_approval_fails_human_control_check(self):
         records, decisions = complete_capture()
-        decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "config")
+        decisions[0] = ToolDecision("tool-approve", "Bash", "accept", "config", session_id="s")
         result = analyze_capture(records, decisions)
         self.assertEqual(result.status, "FAIL")
         statuses = {check.label: check.status for check in result.checks}
@@ -215,11 +213,12 @@ class ClaudeAdapterTests(unittest.TestCase):
                     {"key": "tool_name", "value": {"stringValue": "Bash"}},
                     {"key": "decision", "value": {"stringValue": "accept"}},
                     {"key": "source", "value": {"stringValue": "user_temporary"}},
+                    {"key": "session.id", "value": {"stringValue": "s"}},
                 ],
             }]}]}]
         }
         decisions = extract_tool_decisions([payload])
-        self.assertEqual(decisions, [ToolDecision("tool-1", "Bash", "accept", "user_temporary")])
+        self.assertEqual(decisions, [ToolDecision("tool-1", "Bash", "accept", "user_temporary", session_id="s")])
 
     @mock.patch("agentack.adapters.claude.shutil.which", return_value=None)
     def test_detect_reports_missing_claude(self, _which):
@@ -231,12 +230,13 @@ class ClaudeAdapterTests(unittest.TestCase):
         captured, decisions = complete_capture()
         adapter = ClaudeCodeAdapter(executable="/fake/claude")
         version = mock.Mock(returncode=0, stdout="claude 2.1.0\n", stderr="")
+        help_result = mock.Mock(returncode=0, stdout="--settings --setting-sources --permission-mode --tools --strict-mcp-config --mcp-config", stderr="")
         session = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("agentack.adapters.claude.subprocess.run", side_effect=[version, session]), mock.patch(
+        with mock.patch("agentack.adapters.claude.subprocess.run", side_effect=[version, help_result, session]), mock.patch(
             "agentack.adapters.claude.read_capture", return_value=captured
         ), mock.patch(
             "agentack.adapters.claude.extract_tool_decisions", return_value=decisions
-        ), redirect_stdout(io.StringIO()):
+        ), mock.patch("agentack.adapters.claude_live._interactive_terminal", return_value=True), redirect_stdout(io.StringIO()):
             result = adapter.run_test()
         self.assertEqual(result.status, "PASS")
         self.assertIn("OpenTelemetry", " ".join(result.notes))

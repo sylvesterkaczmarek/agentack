@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .canonical import action_hash, canonicalize_action
+from .canonical import ACTION_IDENTITY_VERSION, action_hash
 from .models import Action, ActionIdentity, ActionLifecycleIdentity, TRACE_SCHEMA_VERSION, TraceEvent
 from .policy import Policy
 
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 
 
 def utc_now_iso() -> str:
@@ -68,11 +68,10 @@ def trace_digest_from_events(events: Iterable[TraceEvent]) -> str:
 def action_identity(action: Action | None) -> ActionIdentity | None:
     if action is None:
         return None
-    canonical = canonicalize_action(action)
     return ActionIdentity(
         sha256=action_hash(action),
-        tool=canonical.tool,
-        operation=canonical.operation,
+        tool=action.tool,
+        operation=action.operation,
     )
 
 
@@ -153,6 +152,7 @@ def base_provenance(
 ) -> dict[str, Any]:
     return {
         "report_schema_version": REPORT_SCHEMA_VERSION,
+        "action_identity_version": ACTION_IDENTITY_VERSION,
         "producer": {"name": "AgentAck", "version": agentack_version},
         "run": {
             "run_id": run_id or new_run_id(),

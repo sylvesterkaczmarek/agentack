@@ -5,6 +5,9 @@ import json
 from typing import Any
 
 from .models import Action
+from .validation import validate_action
+
+ACTION_IDENTITY_VERSION = 2
 
 _TOOL_ALIASES = {
     "bash": "shell",
@@ -55,6 +58,7 @@ def _token(value: str) -> str:
 
 def canonicalize_action(action: Action) -> Action:
     """Return a deterministic action identity using an explicit alias map."""
+    action = validate_action(action)
     tool_token = _token(action.tool)
     tool = _TOOL_ALIASES.get(tool_token, tool_token)
     operation_token = _token(action.operation)
@@ -78,5 +82,7 @@ def canonical_json(value: Any) -> str:
 
 
 def action_hash(action: Action) -> str:
-    payload = canonical_json(canonicalize_action(action).to_dict()).encode("utf-8")
+    # Policy aliases are deliberately excluded from execution identity.
+    action = validate_action(action)
+    payload = canonical_json({"identity_version": ACTION_IDENTITY_VERSION, "action": action.to_dict()}).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()

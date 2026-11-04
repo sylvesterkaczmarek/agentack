@@ -142,6 +142,7 @@ def _run_properties(document: dict[str, Any]) -> dict[str, Any]:
     adapter = document.get("adapter") or {}
     return {
         "agentackReportSchemaVersion": document["report_schema_version"],
+        "actionIdentityVersion": document["action_identity_version"],
         "runId": run["run_id"],
         "evaluationKind": run["kind"],
         "evaluatedAt": run["evaluated_at"],

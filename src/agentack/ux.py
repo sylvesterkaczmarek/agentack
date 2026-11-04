@@ -30,7 +30,7 @@ def render_doctor(statuses: Iterable[AdapterStatus], discovered: Iterable[tuple[
     status_list = list(statuses)
     lines = ["AgentAck doctor", ""]
     for status in status_list:
-        state = "READY" if status.testable else "NOT FOUND" if not status.installed else "DETECTED"
+        state = "TESTABLE" if status.testable else "NOT FOUND" if not status.installed else "DETECTED"
         extra = status.version or status.executable or ""
         lines.append(f"{status.display_name:<20} {state:<10} {extra}".rstrip())
         if status.detail:

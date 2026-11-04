@@ -14,12 +14,12 @@ class CanonicalTests(unittest.TestCase):
         second = Action("shell", "run", parameters={"argv": ["git", "push"]})
         self.assertNotEqual(action_hash(first), action_hash(second))
 
-    def test_explicit_tool_aliases_share_identity(self):
+    def test_policy_aliases_do_not_share_execution_identity(self):
         shell = Action("shell", "run", parameters={"argv": ["git", "status"]})
         bash = Action("Bash", "EXEC", parameters={"argv": ["git", "status"]})
         terminal = Action("terminal", "execute", parameters={"argv": ["git", "status"]})
-        self.assertEqual(action_hash(shell), action_hash(bash))
-        self.assertEqual(action_hash(shell), action_hash(terminal))
+        self.assertNotEqual(action_hash(shell), action_hash(bash))
+        self.assertNotEqual(action_hash(shell), action_hash(terminal))
         self.assertEqual(canonical_action_key(bash), "shell:run")
 
 
