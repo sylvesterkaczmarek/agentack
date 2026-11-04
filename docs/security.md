@@ -18,7 +18,7 @@ Default properties:
 - duplicate JSON key rejection;
 - unknown field rejection;
 - deterministic action identity;
-- explicit tool/operation aliasing without fuzzy matching.
+- explicit tool/operation aliases for policy matching only; exact execution identity remains distinct.
 
 `agentack demo` evaluates synthetic in-memory actions. Those action descriptions are not executed.
 
@@ -70,7 +70,7 @@ The Claude adapter does not label an explicit persistent user approval as a repl
 
 ## Action hashing
 
-SHA-256 action identity detects differences between structured action representations after explicit canonicalization. It does not prove who created an event and is not a digital signature.
+Versioned SHA-256 action identity detects differences between exact structured action representations; policy aliases are excluded from this hash. It does not prove who created an event and is not a digital signature.
 
 ## Incomplete evidence
 
@@ -103,3 +103,11 @@ The random path reduces accidental local injection but is not an authentication 
 ## Reporting vulnerabilities
 
 Use GitHub Security Advisories for security reports. Do not publish exploit details in an issue before a fix is available.
+
+## Candidate verification boundary
+
+The 0.7 candidate has offline regression coverage. Fresh supervised Claude validation remains pending. CLI capability preflight is reported as TESTABLE, not as a verified safety result. Claude tests require an interactive terminal and never automate native human decisions.
+
+Capture version 2 includes the native tool and a digest of the hook-reported working directory. The digest is not encryption or authentication, and the native tool name is not proof of a particular executable. Input lines, complete traces, JSON nesting and telemetry storage are bounded. Telemetry rejection/truncation or unsuccessful process exit prevents an overall PASS.
+
+Every exercised probe requires a session-bound decision and consistent terminal evidence. A fresh prompt alone is insufficient. Duplicate identifiers, conflicting decisions and legacy captures with missing context cannot establish success. Evidence still depends on the integrity of its emitter; this checker cannot detect all omissions by a compromised source.

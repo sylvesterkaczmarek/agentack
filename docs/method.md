@@ -25,9 +25,9 @@ An action contains four security-relevant fields:
 - optional `resource`
 - structured `parameters`
 
-The checker normalizes the tool and operation through a small explicit alias map, serializes the resulting action as canonical JSON with sorted keys, and hashes the bytes with SHA-256.
+Identity version 2 serializes the exact supplied action with sorted JSON keys inside a versioned envelope and hashes those bytes with SHA-256. Tool and operation aliases apply only to broad policy matching, never to the exact approval fingerprint.
 
-Examples of explicit aliases include `Bash`, `shell` and `terminal` mapping to the canonical `shell` tool, and `exec` or `execute` mapping to the canonical shell `run` operation.
+For policy matching, `Bash`, `shell` and `terminal` map to the `shell` category, while `exec` and `execute` map to `run`. These identifiers remain distinct in exact identity. Supplied execution context is also bound through the structured parameters.
 
 There is no fuzzy natural-language matching in the security-critical identity path.
 
@@ -45,7 +45,7 @@ This still does not authenticate the presentation event. A compromised trace emi
 
 ## Event order
 
-JSONL line order is treated as the observed event order. Timestamps are used for approval lifetime checks but do not override line order.
+JSONL line order is treated as the observed event order. Timestamps are used for approval lifetime checks but do not override line order. Regressing timestamps produce ACK009 because reliable approval age cannot be established. Inputs with naive or malformed timestamps are rejected.
 
 Invalid lifecycle ordering produces `ACK006`.
 
@@ -76,3 +76,5 @@ The quality of this rule depends on trustworthy intent correlation. AgentAck doe
 The default policy treats an `interrupt` event as terminal for execution in the recorded session. Any later `action_executed` event produces `ACK008`.
 
 Integrations with resumable workflows should start a new session rather than silently reusing the interrupted session.
+
+See [migration to 0.7](migration-0.7.md) for identity and capture compatibility.

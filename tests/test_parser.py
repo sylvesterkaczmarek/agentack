@@ -36,7 +36,8 @@ class ParserTests(unittest.TestCase):
         changed[-1] = type(last)(type=last.type, timestamp=last.timestamp, session_id="another-session")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "trace.jsonl"
-            write_jsonl(path, changed)
+            # Build invalid external input directly: the writer now validates too.
+            path.write_text("\n".join(json.dumps(e.to_dict()) for e in changed) + "\n", encoding="utf-8")
             with self.assertRaises(TraceValidationError):
                 read_jsonl(path)
 

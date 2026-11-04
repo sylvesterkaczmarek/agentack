@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
   pull_request:
 
@@ -20,9 +21,11 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Type check
-        run: python -m mypy src/agentack/models.py src/agentack/provenance.py src/agentack/report.py src/agentack/adapters/base.py
+        run: python -m mypy src/agentack
       - name: Unit and regression tests
         run: python -m unittest discover -s tests -v
+      - name: Named synthetic integrity corpus
+        run: python scripts/verify_corpus.py
 
   test:
     runs-on: ubuntu-latest
@@ -80,6 +83,8 @@ jobs:
           .wheel-venv/bin/agentack demo
           .wheel-venv/bin/agentack doctor
           .wheel-venv/bin/agentack coverage
+          .wheel-venv/bin/python -m unittest discover -s tests -v
+          .wheel-venv/bin/python scripts/verify_corpus.py
           set +e
           .wheel-venv/bin/agentack test codex >/tmp/agentack-wheel-codex.txt
           codex_code=$?

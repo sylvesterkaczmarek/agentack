@@ -124,7 +124,7 @@ class CodexProtocolAnalysisTests(unittest.TestCase):
     def test_report_reuses_existing_schema(self):
         result = analyze_probes(good_probes(), adapter_version="codex-cli fixture")
         payload = adapter_report_payload(result, run_id="run-codex", evaluated_at="2026-08-19T12:00:00Z")
-        self.assertEqual(payload["report_schema_version"], 1)
+        self.assertEqual(payload["report_schema_version"], 2)
         self.assertEqual(payload["adapter"]["name"], "codex")
         replay = next(check for check in payload["result"]["checks"] if check["label"] == "Approval replay")
         self.assertEqual(replay["rule_id"], "ACK004")

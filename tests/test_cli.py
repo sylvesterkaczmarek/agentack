@@ -78,7 +78,7 @@ class CliTests(unittest.TestCase):
             self.assertTrue(report.exists())
             self.assertTrue(sarif.exists())
             payload = json.loads(report.read_text(encoding="utf-8"))
-            self.assertEqual(payload["report_schema_version"], 1)
+            self.assertEqual(payload["report_schema_version"], 2)
             self.assertEqual(payload["producer"]["name"], "AgentAck")
             self.assertEqual(payload["run"]["kind"], "trace")
             self.assertEqual(payload["input"]["trace"]["source"], "trace.jsonl")

@@ -9,13 +9,13 @@ from agentack.models import Action
 
 def hook_record(event, command=None, *, tool_use_id=None, helper_hash=None):
     record = {
-        "capture_version": 1,
+        "capture_version": 2,
         "event": event,
         "observed_at": "2026-01-01T00:00:00Z",
         "session_id": "s",
     }
     if command is not None:
-        action = Action("shell", "run", resource="workspace", parameters={"command": command})
+        action = Action("shell", "run", resource="workspace", parameters={"command": command, "_agentack_execution_context": {"native_tool": "Bash", "cwd_sha256": "a" * 64}})
         record.update({
             "action_hash": helper_hash or action_hash(action),
             "action": action.to_dict(),
@@ -40,10 +40,10 @@ class AdapterHardeningTests(unittest.TestCase):
             hook_record("SessionEnd"),
         ]
         decisions = [
-            ToolDecision("a", "Bash", "accept", "user_temporary"),
-            ToolDecision("r", "Bash", "reject", "user_reject"),
-            ToolDecision("d", "Bash", "reject", "user_reject"),
-            ToolDecision("b", "Bash", "reject", "user_reject"),
+            ToolDecision("a", "Bash", "accept", "user_temporary", session_id="s"),
+            ToolDecision("r", "Bash", "reject", "user_reject", session_id="s"),
+            ToolDecision("d", "Bash", "reject", "user_reject", session_id="s"),
+            ToolDecision("b", "Bash", "reject", "user_reject", session_id="s"),
         ]
         result = analyze_capture(records, decisions)
         statuses = {check.label: check.status for check in result.checks}

@@ -5,14 +5,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TextIO
 
-from .models import Action, TraceEvent
+from .models import Action, TraceEvent, TraceValidationError
+from .validation import validate_event
+from .parser import read_jsonl
 
 
 class Recorder:
     """Small instrumentation helper for emitting AgentAck JSONL traces."""
 
     def __init__(self, path: str | Path, session_id: str, *, append: bool = False) -> None:
+        validate_event(TraceEvent("session_end", self._now(), session_id))
         self.path = Path(path)
+        if append and self.path.exists() and self.path.stat().st_size:
+            previous = read_jsonl(self.path)
+            if previous[0].session_id != session_id or any(e.type == "session_end" for e in previous):
+                raise TraceValidationError("cannot append to a different or ended session")
         self.session_id = session_id
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._handle: TextIO = self.path.open("a" if append else "w", encoding="utf-8", newline="\n")
@@ -26,9 +33,11 @@ class Recorder:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
-        if not self._ended:
-            self.end(reason="recorder context closed" if exc_type is None else "recorder context closed after error")
-        self.close()
+        try:
+            if not self._ended:
+                self.end(reason="recorder context closed" if exc_type is None else "recorder context closed after error")
+        finally:
+            self.close()
 
     @staticmethod
     def _now() -> datetime:
@@ -37,7 +46,8 @@ class Recorder:
     def _write(self, event: TraceEvent) -> None:
         if self._ended:
             raise RuntimeError("cannot record events after session_end")
-        self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        event = validate_event(event)
+        self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
         self._handle.write("\n")
         self._handle.flush()
 
@@ -82,8 +92,10 @@ class Recorder:
         intent_id: str | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
-        if decision not in {"allow", "deny"}:
+        if not isinstance(decision, str) or decision not in {"allow", "deny"}:
             raise ValueError("decision must be 'allow' or 'deny'")
+        if ttl_seconds is not None and (type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 86400):
+            raise TraceValidationError("ttl_seconds must be an integer from 1 to 86400")
         timestamp = self._now()
         self._write(
             TraceEvent(
@@ -157,7 +169,8 @@ class Recorder:
             session_id=self.session_id,
             reason=reason,
         )
-        self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        event = validate_event(event)
+        self._handle.write(json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
         self._handle.write("\n")
         self._handle.flush()
         self._ended = True

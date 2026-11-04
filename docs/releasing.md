@@ -38,3 +38,7 @@ from the exact commit already present on `main`.
 The release branch is only a trigger and can be deleted after a successful release.
 
 A failed PyPI publish or failed public-install verification does not create the GitHub release.
+
+## Verification gate
+
+The publication workflow requires the full CI workflow on the exact release commit and rejects prerelease version strings. Complete review and verify the final version before creating a release branch. See [verification](verification.md).
