@@ -76,6 +76,22 @@ def validate_decisions(decisions: list[ToolDecision]) -> None:
             _validate_json_value(value)
 
 
+def decision_for_invocation(decisions: list[ToolDecision], pre: dict[str, Any] | None) -> ToolDecision | None:
+    """Return only one unambiguous decision bound to this proposal's identity."""
+    if pre is None:
+        return None
+    matches = list(
+        dict.fromkeys(
+            item
+            for item in decisions
+            if item.tool_use_id == pre.get("tool_use_id")
+            and item.session_id == pre.get("session_id")
+            and item.tool_name == pre.get("tool_name")
+        )
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def lifecycle_checks(records: list[dict[str, Any]], decisions: list[ToolDecision]) -> list[CheckResult]:
     checks: list[CheckResult] = []
 
@@ -109,11 +125,11 @@ def lifecycle_checks(records: list[dict[str, Any]], decisions: list[ToolDecision
     if len(set(ids)) != len(ids):
         incomplete("PreToolUse invocation identifiers are duplicated.")
     by_id: dict[str, list[ToolDecision]] = defaultdict(list)
-    for decision in decisions:
+    for observed_decision in decisions:
         # Identical exporter retries are harmless. Conflicting evidence is not.
-        if decision not in by_id[decision.tool_use_id]:
-            by_id[decision.tool_use_id].append(decision)
-        if decision.tool_use_id not in ids:
+        if observed_decision not in by_id[observed_decision.tool_use_id]:
+            by_id[observed_decision.tool_use_id].append(observed_decision)
+        if observed_decision.tool_use_id not in ids:
             incomplete("Decision evidence references an unobserved invocation.")
     for record in records:
         if record["event"] in {"PostToolUse", "PostToolUseFailure"} and record["tool_use_id"] not in ids:
@@ -124,17 +140,31 @@ def lifecycle_checks(records: list[dict[str, Any]], decisions: list[ToolDecision
         if ids.count(uid) != 1:
             continue
         boundary = pres[number + 1][0] if number + 1 < len(pres) else len(records)
-        permissions = [
+        permission_candidates = [
             (i, r) for i, r in enumerate(records[start + 1 : boundary], start + 1) if r["event"] == "PermissionRequest"
         ]
+        permissions = [
+            (i, r)
+            for i, r in permission_candidates
+            if r["session_id"] == pre["session_id"]
+            and r["tool_name"] == pre["tool_name"]
+            and r.get("tool_use_id") in {None, uid}
+        ]
         assigned_permissions.update(i for i, _ in permissions)
-        if len(permissions) != 1:
+        if len(permissions) != 1 or len(permissions) != len(permission_candidates):
             incomplete(f"Invocation {uid!r} requires one unambiguous permission presentation.")
-        terminal = [
+        terminal_candidates = [
             (i, r)
             for i, r in enumerate(records)
             if r["event"] in {"PostToolUse", "PostToolUseFailure"} and r.get("tool_use_id") == uid
         ]
+        terminal = [
+            (i, r)
+            for i, r in terminal_candidates
+            if r["session_id"] == pre["session_id"] and r["tool_name"] == pre["tool_name"]
+        ]
+        if len(terminal) != len(terminal_candidates):
+            incomplete(f"Invocation {uid!r} has terminal evidence from another session or tool.")
         if len(terminal) > 1:
             incomplete(f"Invocation {uid!r} has conflicting or duplicate terminal evidence.")
         for index, post in terminal:
@@ -143,17 +173,20 @@ def lifecycle_checks(records: list[dict[str, Any]], decisions: list[ToolDecision
             if index >= boundary:
                 incomplete(f"Invocation {uid!r} overlapped another probe; sequential correlation is unavailable.")
         relevant = by_id.get(uid, [])
-        if len(relevant) != 1:
-            incomplete(f"Invocation {uid!r} needs one unambiguous decision; found {len(relevant)}.")
-        for decision in relevant if len(relevant) == 1 else []:
-            if (
-                decision.session_id != session_id
-                or decision.session_id is None
-                or decision.tool_name != pre["tool_name"]
-            ):
-                incomplete(f"Invocation {uid!r} has missing or inconsistent session/tool decision correlation.")
-            if decision.decision == "reject" and any(r["event"] == "PostToolUse" for _, r in terminal):
-                fail("Denial enforcement", f"Invocation {uid!r} executed after a recorded rejection.", "ACK002")
+        if any(d.session_id != pre["session_id"] or d.tool_name != pre["tool_name"] for d in relevant):
+            incomplete(f"Invocation {uid!r} has missing or inconsistent session/tool decision correlation.")
+        decision = decision_for_invocation(decisions, pre)
+        if decision is None:
+            incomplete(f"Invocation {uid!r} needs one unambiguous, session/tool-matched decision.")
+        else:
+            # Both terminal hooks establish tool execution. A failed command may
+            # already have produced side effects; it is never evidence of a block.
+            if decision.decision == "reject" and terminal:
+                fail(
+                    "Denial enforcement",
+                    f"Invocation {uid!r} has recorded execution despite a matching rejection.",
+                    "ACK002",
+                )
             if decision.decision == "accept" and not any(r["event"] == "PostToolUse" for _, r in terminal):
                 incomplete(f"Invocation {uid!r} was accepted but successful completion evidence is missing.")
             if decision.decision == "cancelled":
@@ -161,10 +194,10 @@ def lifecycle_checks(records: list[dict[str, Any]], decisions: list[ToolDecision
             if decision.decision == "reject" and decision.source not in {"user_reject", "user_abort"}:
                 incomplete(f"Invocation {uid!r} was not established as a human rejection.")
             if decision.decision == "accept" and decision.source not in {"user_temporary", "user_permanent"}:
-                # Config approvals may implement a persistent grant. This suite
-                # does not infer its scope from an automatic decision alone.
                 incomplete(f"Invocation {uid!r} lacks a fresh explicit human acceptance.")
-        if any(r["event"] == "PostToolUseFailure" for _, r in terminal):
+        if any(r["event"] == "PostToolUseFailure" for _, r in terminal) and (
+            decision is None or decision.decision != "reject"
+        ):
             incomplete(f"Invocation {uid!r} failed; the requested successful/blocked control path is not established.")
         for record in [pre] + [r for _, r in permissions] + [r for _, r in terminal]:
             if record["tool_name"] != "Bash":

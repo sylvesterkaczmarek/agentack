@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import math
+import re
 import secrets
 import socket
 import threading
@@ -24,13 +28,71 @@ class ToolDecision:
     session_id: str | None = None
 
 
-def _otel_value(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-    for key in ("stringValue", "boolValue", "intValue", "doubleValue", "bytesValue"):
-        if key in value:
-            return value[key]
-    return None
+_VALUE_FIELDS = {"stringValue", "boolValue", "intValue", "doubleValue", "bytesValue", "arrayValue", "kvlistValue"}
+_DECISION_EVENTS = {"tool_decision", "claude_code.tool_decision"}
+
+
+def _otel_value(value: Any, *, depth: int = 0) -> Any:
+    """Decode the supported OTLP AnyValue union without coercing ambiguous input.
+
+    Unknown message fields are ignored, as OTLP requires. An empty AnyValue is
+    permitted, but cannot supply a required security-relevant string attribute.
+    """
+    if depth > 20 or not isinstance(value, dict):
+        raise TraceValidationError("OTLP AnyValue must be a bounded typed object")
+    fields = _VALUE_FIELDS.intersection(value)
+    if len(fields) > 1:
+        raise TraceValidationError("OTLP AnyValue contains multiple value alternatives")
+    if not fields:
+        return None
+    field = next(iter(fields))
+    item = value[field]
+    if field == "stringValue":
+        if not isinstance(item, str):
+            raise TraceValidationError("OTLP stringValue must be a string")
+        try:
+            item.encode("utf-8")
+        except UnicodeError as exc:
+            raise TraceValidationError("OTLP stringValue contains invalid Unicode") from exc
+        return item
+    if field == "boolValue":
+        if type(item) is not bool:
+            raise TraceValidationError("OTLP boolValue must be a boolean")
+        return item
+    if field == "intValue":
+        if type(item) is int:
+            number = item
+        elif isinstance(item, str) and len(item) <= 20 and re.fullmatch(r"-?(0|[1-9][0-9]*)", item):
+            number = int(item)
+        else:
+            raise TraceValidationError("OTLP intValue must be a signed decimal integer")
+        if not -(2**63) <= number < 2**63:
+            raise TraceValidationError("OTLP intValue exceeds signed 64-bit range")
+        return number
+    if field == "doubleValue":
+        if isinstance(item, str) and item in {"NaN", "Infinity", "-Infinity"}:
+            return float(item)
+        if type(item) not in {int, float}:
+            raise TraceValidationError("OTLP doubleValue must be numeric")
+        try:
+            if not math.isfinite(item):
+                raise ValueError("non-finite numeric value")
+        except (ValueError, OverflowError) as exc:
+            raise TraceValidationError("OTLP doubleValue is outside the supported range") from exc
+        return item
+    if field == "bytesValue":
+        if not isinstance(item, str):
+            raise TraceValidationError("OTLP bytesValue must be base64 text")
+        try:
+            return base64.b64decode(item + "=" * (-len(item) % 4), altchars=b"-_", validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise TraceValidationError("OTLP bytesValue is invalid base64") from exc
+    if not isinstance(item, dict):
+        raise TraceValidationError(f"OTLP {field} must be an object")
+    values = _objects(item.get("values", []), field)
+    if field == "arrayValue":
+        return [_otel_value(entry, depth=depth + 1) for entry in values]
+    return _key_values(values, depth=depth + 1)
 
 
 def _objects(value: Any, field: str) -> list[dict[str, Any]]:
@@ -39,14 +101,30 @@ def _objects(value: Any, field: str) -> list[dict[str, Any]]:
     return value
 
 
-def _attributes(record: dict[str, Any]) -> dict[str, Any]:
+def _key_values(values: list[dict[str, Any]], *, depth: int = 0) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for item in _objects(record.get("attributes", []), "attributes"):
+    for item in values:
         key = item.get("key")
         if not isinstance(key, str) or key in result:
             raise TraceValidationError("OTLP attribute keys are missing or duplicated")
-        result[key] = _otel_value(item.get("value"))
+        result[key] = _otel_value(item.get("value", {}), depth=depth)
     return result
+
+
+def _attributes(record: dict[str, Any]) -> dict[str, Any]:
+    return _key_values(_objects(record.get("attributes", []), "attributes"))
+
+
+def _string_alias(attrs: dict[str, Any], *names: str) -> str | None:
+    """Require populated compatibility aliases to agree; never choose by truthiness."""
+    values = [attrs[name] for name in names if name in attrs]
+    if not values:
+        return None
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise TraceValidationError(f"OTLP {'/'.join(names)} must be non-empty strings")
+    if any(value != values[0] for value in values[1:]):
+        raise TraceValidationError(f"OTLP {'/'.join(names)} contains contradictory aliases")
+    return values[0]
 
 
 def extract_tool_decisions(payloads: list[dict[str, Any]]) -> list[ToolDecision]:
@@ -61,31 +139,27 @@ def extract_tool_decisions(payloads: list[dict[str, Any]]) -> list[ToolDecision]
             for scope in _objects(resource.get("scopeLogs", []), "scopeLogs"):
                 for record in _objects(scope.get("logRecords", []), "logRecords"):
                     attrs = _attributes(record)
-                    event_name = attrs.get("event.name") or _otel_value(record.get("body"))
-                    if not isinstance(event_name, str) or event_name not in {
-                        "tool_decision",
-                        "claude_code.tool_decision",
-                    }:
+                    body = _otel_value(record.get("body", {}))
+                    event = attrs.get("event.name")
+                    event_is_decision = isinstance(event, str) and event in _DECISION_EVENTS
+                    body_is_decision = isinstance(body, str) and body in _DECISION_EVENTS
+                    if not (event_is_decision or body_is_decision):
                         continue
-                    uid = attrs.get("tool_use_id")
-                    decision = attrs.get("decision") or attrs.get("decision_type")
-                    if (
-                        not isinstance(uid, str)
-                        or not uid
-                        or not isinstance(decision, str)
-                        or decision not in {"accept", "reject", "cancelled"}
-                    ):
+                    if ("event.name" in attrs and not event_is_decision) or (body is not None and not body_is_decision):
+                        raise TraceValidationError("OTLP event name and body disagree about a tool decision")
+                    uid = _string_alias(attrs, "tool_use_id")
+                    decision = _string_alias(attrs, "decision", "decision_type")
+                    if uid is None or decision not in {"accept", "reject", "cancelled"}:
                         raise TraceValidationError("OTLP tool decision has invalid identifier or decision")
-                    name = attrs.get("tool_name")
-                    source = attrs.get("source") or attrs.get("decision_source")
-                    session = attrs.get("session.id")
-                    for value in (name, source, session):
-                        if value is not None and not isinstance(value, str):
-                            raise TraceValidationError("OTLP decision correlation fields must be strings")
+                    name = _string_alias(attrs, "tool_name")
+                    source = _string_alias(attrs, "source", "decision_source")
+                    session = _string_alias(attrs, "session.id")
                     item = ToolDecision(uid, name, decision, source, session)
                     if item not in seen:
                         seen.add(item)
                         decisions.append(item)
+                        if len(decisions) > 100_000:
+                            raise TraceValidationError("OTLP decision count exceeds the capture limit")
     return decisions
 
 

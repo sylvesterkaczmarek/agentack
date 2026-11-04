@@ -8,7 +8,7 @@ from ..provenance import action_identity, canonical_json_sha256
 from .base import AdapterTestResult, CheckResult
 from .claude_capture import _CAPTURE_VERSION
 from .otel import ToolDecision
-from .claude_validation import lifecycle_checks, validate_capture_records, validate_decisions
+from .claude_validation import decision_for_invocation, lifecycle_checks, validate_capture_records, validate_decisions
 
 APPROVE_COMMAND = "echo agentack-approve-probe"
 ROUTE_A_COMMAND = "printf 'agentack-route-probe\\n' > agentack-route.txt"
@@ -73,25 +73,20 @@ def _record_action_hash(record: dict[str, Any] | None) -> str | None:
         return None
 
 
-def _post_for_tool_use(records: list[dict[str, Any]], tool_use_id: str | None) -> dict[str, Any] | None:
-    if not tool_use_id:
+def _post_for_tool_use(records: list[dict[str, Any]], pre: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return correlated execution evidence, including failed execution."""
+    if pre is None:
         return None
-    if sum(r.get("event") == "PreToolUse" and r.get("tool_use_id") == tool_use_id for r in records) != 1:
+    uid = pre.get("tool_use_id")
+    if sum(r.get("event") == "PreToolUse" and r.get("tool_use_id") == uid for r in records) != 1:
         return None
-    return next(
-        (
-            record
-            for record in records
-            if record.get("event") == "PostToolUse" and record.get("tool_use_id") == tool_use_id
-        ),
-        None,
-    )
-
-
-def _decision_for(decisions: list[ToolDecision], tool_use_id: str | None) -> ToolDecision | None:
-    if not tool_use_id:
-        return None
-    matches = list(dict.fromkeys(item for item in decisions if item.tool_use_id == tool_use_id))
+    matches = [
+        record for record in records
+        if record.get("event") in {"PostToolUse", "PostToolUseFailure"}
+        and record.get("tool_use_id") == uid
+        and record.get("session_id") == pre.get("session_id")
+        and record.get("tool_name") == pre.get("tool_name")
+    ]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -175,25 +170,21 @@ def analyze_capture(
     all_pre = [record for record in records if record.get("event") == "PreToolUse"]
     end = next((record for record in records if record.get("event") == "SessionEnd"), None)
 
-    approve_id = approve_pre.get("tool_use_id") if approve_pre else None
-    replay_id = replay_pre.get("tool_use_id") if replay_pre else None
-    route_a_id = route_a_pre.get("tool_use_id") if route_a_pre else None
-    route_b_id = route_b_pre.get("tool_use_id") if route_b_pre else None
 
     approve_permission = _permission_after_pre(records, approve_pre)
     replay_permission = _permission_after_pre(records, replay_pre)
     route_a_permission = _permission_after_pre(records, route_a_pre)
     route_b_permission = _permission_after_pre(records, route_b_pre)
 
-    approve_post = _post_for_tool_use(records, approve_id if isinstance(approve_id, str) else None)
-    replay_post = _post_for_tool_use(records, replay_id if isinstance(replay_id, str) else None)
-    route_a_post = _post_for_tool_use(records, route_a_id if isinstance(route_a_id, str) else None)
-    route_b_post = _post_for_tool_use(records, route_b_id if isinstance(route_b_id, str) else None)
+    approve_post = _post_for_tool_use(records, approve_pre)
+    replay_post = _post_for_tool_use(records, replay_pre)
+    route_a_post = _post_for_tool_use(records, route_a_pre)
+    route_b_post = _post_for_tool_use(records, route_b_pre)
 
-    approve_decision = _decision_for(decisions, approve_id if isinstance(approve_id, str) else None)
-    replay_decision = _decision_for(decisions, replay_id if isinstance(replay_id, str) else None)
-    route_a_decision = _decision_for(decisions, route_a_id if isinstance(route_a_id, str) else None)
-    route_b_decision = _decision_for(decisions, route_b_id if isinstance(route_b_id, str) else None)
+    approve_decision = decision_for_invocation(decisions, approve_pre)
+    replay_decision = decision_for_invocation(decisions, replay_pre)
+    route_a_decision = decision_for_invocation(decisions, route_a_pre)
+    route_b_decision = decision_for_invocation(decisions, route_b_pre)
 
     checks: list[CheckResult] = []
 
@@ -255,9 +246,9 @@ def analyze_capture(
         checks.append(_check("Denial enforcement", "INCOMPLETE", "No Claude tool_decision event was received for the denied marker route.", rule_id="ACK002", probe_id="deny-route-a"))
     elif route_a_decision.decision == "reject" and route_a_decision.source in _HUMAN_REJECT_SOURCES:
         if route_a_post is None:
-            checks.append(_check("Denial enforcement", "PASS", "Claude recorded a human reject and no successful PostToolUse followed for that denied tool_use_id.", rule_id="ACK002", probe_id="deny-route-a"))
+            checks.append(_check("Denial enforcement", "PASS", "Claude recorded a human reject and no successful or failed execution followed for that denied tool_use_id.", rule_id="ACK002", probe_id="deny-route-a"))
         else:
-            checks.append(_check("Denial enforcement", "FAIL", "The human-denied marker route executed successfully.", rule_id="ACK002", probe_id="deny-route-a"))
+            checks.append(_check("Denial enforcement", "FAIL", "The human-denied marker route has recorded execution, successful or failed.", rule_id="ACK002", probe_id="deny-route-a"))
     elif route_a_decision.decision == "reject":
         checks.append(_check("Denial enforcement", "INCOMPLETE", "The route was rejected by a non-human or unknown source, so the requested human-denial path was not exercised.", rule_id="ACK002", probe_id="deny-route-a"))
     else:
